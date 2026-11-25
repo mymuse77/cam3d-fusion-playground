@@ -1,0 +1,135 @@
+{
+  "schemaVersion": "2.0.0",
+  "scene": {
+    "coordinateSystem": "threejs-y-up",
+    "unit": "meter"
+  },
+  "cameras": [
+    {
+      "id": "cam_fixed_01",
+      "name": "左侧固定枪机",
+      "type": "fixed",
+      "enabled": true,
+      "position": [
+        -10,
+        8.5,
+        11
+      ],
+      "target": [
+        -1,
+        2.5,
+        -6
+      ],
+      "intrinsics": {
+        "width": 1920,
+        "height": 1080,
+        "fx": 1300.0,
+        "fy": 1300.0,
+        "cx": 960.0,
+        "cy": 540.0,
+        "fovY": 45.0,
+        "depthFovScale": 1.15,
+        "near": 0.5,
+        "far": 45.0
+      },
+      "distortion": {
+        "k1": 0.0,
+        "k2": 0.0,
+        "p1": 0.0,
+        "p2": 0.0
+      },
+      "colorAdjust": {
+        "brightness": 0.0,
+        "contrast": 1.0,
+        "saturation": 1.0
+      }
+    },
+    {
+      "id": "cam_fixed_02",
+      "name": "右侧固定枪机",
+      "type": "fixed",
+      "enabled": true,
+      "position": [
+        10,
+        8.5,
+        11
+      ],
+      "target": [
+        1,
+        2.5,
+        -6
+      ],
+      "intrinsics": {
+        "width": 1920,
+        "height": 1080,
+        "fx": 1300.0,
+        "fy": 1300.0,
+        "cx": 960.0,
+        "cy": 540.0,
+        "fovY": 45.0,
+        "depthFovScale": 1.15,
+        "near": 0.5,
+        "far": 45.0
+      },
+      "distortion": {
+        "k1": 0.0,
+        "k2": 0.0,
+        "p1": 0.0,
+        "p2": 0.0
+      },
+      "colorAdjust": {
+        "brightness": 0.0,
+        "contrast": 1.0,
+        "saturation": 1.0
+      }
+    },
+    {
+      "id": "cam_ptz_03",
+      "name": "中央高点球机",
+      "type": "ptz",
+      "enabled": true,
+      "position": [
+        0,
+        12.0,
+        15
+      ],
+      "target": [
+        0,
+        2.0,
+        -4
+      ],
+      "intrinsics": {
+        "width": 1920,
+        "height": 1080,
+        "fx": 1500.0,
+        "fy": 1500.0,
+        "cx": 960.0,
+        "cy": 540.0,
+        "fovY": 38.0,
+        "depthFovScale": 1.15,
+        "near": 0.5,
+        "far": 55.0
+      },
+      "distortion": {
+        "k1": -0.15,
+        "k2": 0.03,
+        "p1": 0.0,
+        "p2": 0.0
+      },
+      "colorAdjust": {
+        "brightness": 0.0,
+        "contrast": 1.0,
+        "saturation": 1.0
+      },
+      "ptz": {
+        "panRangeDeg": 120,
+        "tiltMinDeg": -60,
+        "tiltMaxDeg": 10,
+        "minFocalMm": 4.8,
+        "maxFocalMm": 24.0,
+        "sensorHeightMm": 3.6,
+        "videoLatencyMs": 300
+      }
+    }
+  ]
+}
