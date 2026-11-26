@@ -1,19 +1,20 @@
 # 本地监控视频与自定义 GLB 园区模型规范 (`ASSET_REQUIREMENTS.md`)
 
-为了确保本地监控视频和园区 3D 模型在 `dt-video-fusion-pro-v3` 工程中能够一次性加载成功、不报错且融合精度达标，请按以下规范准备素材。
+为了确保本地监控视频、实时流和园区 3D 模型在 `cam3d-fusion-playground` v3.0 工程中能够一次性加载成功、不报错且融合精度达标，请按以下规范准备素材。
 
 ---
 
-## 一、本地监控视频要求（对应练习 1）
+## 一、本地监控视频与流媒体要求（对应练习 1）
 
 海康、大华等安防设备直接导出的录像通常是 **H.265 (HEVC)** 或私有封装格式（如 `.dav`），浏览器原生 `<video>` 标签往往无法硬解（表现为黑屏、有声音无画面或报错）。
 
 ### 1. 推荐规格
-- **容器与编码**：**`.mp4`（H.264 / AVC 编码）** 或 `.webm`（VP8/VP9），跨浏览器兼容性最佳。
+- **容器与编码**：**`.mp4`（H.264 / AVC 编码）** 或 `.webm`（VP8/VP9），跨浏览器兼容性最佳；实时流推荐 **WebRTC WHEP**（低延迟、原生支持）。
 - **像素格式**：必须是 **`yuv420p`（8-bit）**，不要使用 10-bit 或 `yuv444p`（绝大多数浏览器不支持）。
 - **分辨率与帧率**：推荐 **1080P（1920×1080）或 720P**，帧率 **25~30 FPS**。多路融合时尽量避免直接使用 4K 原片，以免每帧上传 `VideoTexture` 到 GPU 引起掉帧。
 - **宽高比一致**：视频的真实宽高比（如 16:9）需与 `park_cameras.json` 中 `intrinsics.width / height` 保持一致，否则投影画面会被拉扁或拉长。
 - **音频**：项目已静音播放，可去掉音轨以减小文件体积。
+- **跨域要求（远程流）**：接入外部 HTTP MP4 / HLS / WHEP 地址时，流媒体服务端需返回 `Access-Control-Allow-Origin: *`，否则 WebGL `VideoTexture` 上传纹理时会触发安全拦截。
 
 ### 2. 万能转码命令（FFmpeg）
 如果手头是海康/大华导出的 H.265 或其他格式录像，使用以下 `ffmpeg` 命令即可一键转为标准 Web 视频：
@@ -33,15 +34,15 @@ ffmpeg -i input_raw.mp4 -c:v libx264 -pix_fmt yuv420p -vf "scale=1920:-2" -an -m
 
 ## 二、园区 GLB 模型导出要求（对应练习 5）
 
-由于工程的片元着色器内置了**掠射角防拉丝（Grazing Angle）**与**PCF 3×3 深度图遮挡**，对模型的封装、法线、材质和比例有以下硬性要求：
+由于工程的片元着色器内置了**掠射角防拉丝（Grazing Angle）**与**PCF 3×3 深度图遮挡**，对模型的封装、法线、材质和比例有以下要求：
 
 ### 1. 必须是单文件 `.glb`（不要上传 `.gltf`）
 - 前端上传按钮通过 `URL.createObjectURL(file)` 在本地读取单个文件。如果上传 `.gltf`（贴图与 `.bin` 几何数据分离在外部文件夹），浏览器无法访问外部依赖路径，会直接加载失败。
 - **要求**：导出时务必选择 **glTF Binary (`.glb`)**，将几何体和全部贴图打包进单文件。
 
-### 2. 材质与法线要求（核心避坑点）
-- **必须使用标准 PBR 材质，严禁勾选 Unlit（无光照）**：
-  `src/shaders/injectMultiProjection.js` 在顶点着色器中读取了 `objectNormal` 用于计算掠射角淡出。Three.js 的 `MeshStandardMaterial`（对应 Blender 的 `Principled BSDF`）包含法线，而 Unlit 材质会被解析为 `MeshBasicMaterial`（无 `objectNormal`），会导致 **Shader 编译报错黑屏**。
+### 2. 材质与法线要求
+- **标准 PBR 与 Unlit（无光照）材质均已兼容**：
+  v3.0 着色器注入器已兼容 `MeshStandardMaterial`、`MeshBasicMaterial`（常见于倾斜摄影 `KHR_materials_unlit` 模型）、`InstancedMesh` 及非等比缩放网格，并在缺失顶点法线时自动调用 `computeVertexNormals()` 补全；但仍建议优先使用标准 PBR 材质以获得最佳光影融合质感。
 - **法线必须朝外（不能反面）**：
   若墙面或地面法线朝向建筑内部，掠射角算法 `dot(worldN, toCamDir)` 会判定该面背对摄像头，直接过滤视频投影，表现为“某面墙投不上视频”。
 - **尽量避免超薄单面片**：
@@ -50,13 +51,10 @@ ffmpeg -i input_raw.mp4 -c:v libx264 -pix_fmt yuv420p -vf "scale=1920:-2" -an -m
 ### 3. 坐标系与物理比例
 - **单位**：**1 单位 = 1 米（Meter）**。工程中的相机视距（`near: 0.5, far: 60`）、采点红球（`0.18m`）、行人高度（`1.7m`）与电子围栏均按“米”设定。从 3ds Max / CAD 导出时若单位是毫米（大了 1000 倍），会导致画面完全不可见。
 - **朝向**：**右手坐标系，+Y 轴朝上**（CAD / 3ds Max 默认 +Z 朝上，导出时务必勾选转换 Y-Up）。
-- **地面高度**：园区主地面建议贴近 **`Y = 0`**（练习 6 的 YOLO 反投影默认与 `Y = 0` 平面求交）。若模型原点偏移，上传时勾选左上角「上传后自动居中落底并适配视角」即可自动归零。
+- **地面与高差地形**：练习 6 的 YOLO 反投影会优先与可行走网格（`userData.isWalkable`，外部 GLB 自动适配全部朝上表面 `ny > 0.45`）进行 3D 射线求交，支持斜坡、台阶与多层平台；未命中时平滑回退至 `Y = 0` 平面。
 
-### 4. Draco 压缩与纯内网环境配置
-- 工程已内置 `DRACOLoader`，**支持 Draco 几何压缩的 `.glb`**（可缩小体积 70%~90%）。
-- **内网/离线提示**：`src/main.js` 默认将 Draco 解码器指向在线 CDN（`https://www.gstatic.com/draco/...`）。若在纯内网环境运行，请：
-  1. 导出 `.glb` 时**取消勾选 Draco 压缩**；或
-  2. 将 `node_modules/three/examples/jsm/libs/draco/` 复制到 `public/draco/`，并将 `src/main.js` 中的 `dracoLoader.setDecoderPath(...)` 改为 `dracoLoader.setDecoderPath('/draco/')`。
+### 4. Draco 压缩与纯内网离线解码
+- 工程已通过 `vite.config.js` 在构建/启动时自动将 `three/examples/jsm/libs/draco` 解码器复制到 `public/draco/`，前端 `DRACOLoader` 默认指向本地 `/draco/`，**无需外网 CDN 即可在纯内网环境中直接加载 Draco 压缩的 `.glb`**（可缩小模型体积 70%~90%）。
 
 ### 5. 轻量化性能建议（保证 60 FPS）
 由于视频融合需额外执行 Pass 1 深度图渲染，建议控制模型复杂度：
@@ -72,5 +70,5 @@ ffmpeg -i input_raw.mp4 -c:v libx264 -pix_fmt yuv420p -vf "scale=1920:-2" -an -m
 1. **格式**：`glTF 二进制 (.glb)`
 2. **变换**：勾选 **`+Y 向上`**
 3. **几何数据**：勾选 **`应用修改器`**、勾选 **`法向（Normals）`**
-4. **材质**：保持默认导出（确保节点为 `原理化 BSDF`，勿使用无光照/纯自发光节点）
-5. **压缩**：外网环境可勾选 `压缩 (Draco)`；离线/内网环境建议取消勾选。
+4. **材质**：保持默认导出（推荐 `原理化 BSDF`，倾斜摄影等无光照模型亦可正常兼容）
+5. **压缩**：可放心勾选 `压缩 (Draco)`（内置本地 `/draco/` 离线解码支持）。

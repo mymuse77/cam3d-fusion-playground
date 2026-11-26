@@ -40,25 +40,58 @@ export function createTestCanvasTexture(label, accentColor = '#00e5ff') {
 }
 
 /**
- * 模拟 YOLO 多摄像头检测器：让虚拟行人穿越 1、2 号枪机重叠区及中央电子围栏
+ * 模拟 YOLO 多摄像头检测器（双目标交叉 + 三维斜坡/平台巡检）：
+ * - 目标 A：往返穿越 1、2 号枪机重叠区及中央电子围栏
+ * - 目标 B：沿东侧斜坡走上 0.8m 巡检平台再走下，并与目标 A 在重叠区交叉
  */
 export function generateMockYoloDetections(timeSec, cameras) {
-  const truePos = new THREE.Vector3(Math.sin(timeSec * 0.45) * 7.5, 0, -1.0 + Math.cos(timeSec * 0.45) * 2.2);
+  const posA = new THREE.Vector3(
+    Math.sin(timeSec * 0.45) * 6.5,
+    0,
+    -1.0 + Math.cos(timeSec * 0.45) * 2.2
+  );
+
+  // 目标 B 在 [z = 3.5 -> -4.5] 往返巡检：经过斜坡 (z∈[0.5,3.5]) 与平台 (z∈[-5.5,0.5], y=0.8)
+  const phaseB = (Math.sin(timeSec * 0.35) + 1) * 0.5; // 0 ~ 1
+  const zB = 3.5 - phaseB * 8.0; // 3.5 -> -4.5
+  let yB = 0;
+  if (zB <= 0.5) {
+    yB = 0.8;
+  } else if (zB < 3.5) {
+    yB = 0.8 * ((3.5 - zB) / 3.0);
+  }
+  const posB = new THREE.Vector3(7.0 + Math.sin(timeSec * 0.7) * 0.4, yB, zB);
+
+  const actors = [
+    { pos: posA, cls: 'person', idOffset: 1 },
+    { pos: posB, cls: 'person', idOffset: 2 }
+  ];
+
   const results = new Map();
 
   for (const item of cameras) {
     if (item.type !== 'fixed') continue;
-    const viewPos = truePos.clone().applyMatrix4(item.camera.matrixWorldInverse);
-    if (viewPos.z >= -0.5) continue;
+    const camSeed = item.id === 'cam_fixed_01' ? 100 : 200;
+    const dets = [];
 
-    const pixel = projectCameraPointToPixel(viewPos, item.intrinsics, item.distortion);
-    if (pixel) {
-      const u = pixel.u + (Math.random() - 0.5) * 6;
-      const v = pixel.v + (Math.random() - 0.5) * 6;
-      results.set(item.id, [
-        { trackId: item.id === 'cam_fixed_01' ? 101 : 202, cls: 'person', bbox: [u - 30, v - 120, u + 30, v] }
-      ]);
+    for (const actor of actors) {
+      const viewPos = actor.pos.clone().applyMatrix4(item.camera.matrixWorldInverse);
+      const pixel = projectCameraPointToPixel(viewPos, item.intrinsics, item.distortion);
+      if (pixel) {
+        const u = pixel.u + (Math.random() - 0.5) * 5;
+        const v = pixel.v + (Math.random() - 0.5) * 5;
+        dets.push({
+          trackId: camSeed + actor.idOffset,
+          cls: actor.cls,
+          bbox: [u - 28, v - 115, u + 28, v]
+        });
+      }
+    }
+
+    if (dets.length > 0) {
+      results.set(item.id, dets);
     }
   }
+
   return results;
 }

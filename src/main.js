@@ -11,9 +11,11 @@ import { MultiProjectorManager, syncDepthCameraFromIntrinsics } from './utils/mu
 import { CameraScheduler } from './utils/cameraScheduler.js';
 import { PTZController } from './utils/ptzController.js';
 import { PointPicker } from './utils/pointPicker.js';
-import { BBoxProjector } from './utils/bboxProjector.js';
+import { BBoxProjector, collectWalkableMeshes } from './utils/bboxProjector.js';
 import { MultiCamTracker3D } from './utils/multiCamTracker3D.js';
 import { Geofence3D, TargetVisualManager } from './utils/geofenceAndVisuals.js';
+import { VideoStreamManager } from './utils/videoStreamManager.js';
+import { mountWebCalibratorModal } from './utils/webCalibrator.js';
 import { createTestCanvasTexture, generateMockYoloDetections } from './utils/mockData.js';
 
 // ==========================================
@@ -56,17 +58,36 @@ scene.add(geofence.group);
 
 const targetVisualMgr = new TargetVisualManager(yoloVisualGroup, 45);
 const alarmBanner = document.getElementById('alarm-banner');
+const statusBar = document.getElementById('status-bar');
+const streamCamSelect = document.getElementById('stream-cam-select');
 
 // ==========================================
-// 2. 初始化多路投影管理器与动态调度器
+// 2. 初始化多路投影管理器、视线焦点调度器与流生命周期管理器
 // ==========================================
 const projectorMgr = new MultiProjectorManager(scene);
-const scheduler = new CameraScheduler(projectorMgr, mainCamera, helperGroup);
-const statusBar = document.getElementById('status-bar');
+const scheduler = new CameraScheduler(projectorMgr, mainCamera, helperGroup, () => controls.target);
 
-function updateStatusBar() {
-  statusBar.textContent = `当前激活槽位: ${scheduler.slotMap.length} / 4 (池总数: ${scheduler.logicalCameras.length})`;
+function updateStatusBar(extraMsg = '') {
+  const base = `激活槽位: ${scheduler.slotMap.length} / 4 (池总数: ${scheduler.logicalCameras.length})`;
+  statusBar.textContent = extraMsg ? `${base} | ${extraMsg}` : base;
 }
+
+const streamMgr = new VideoStreamManager({
+  onTextureChange(camId, texture) {
+    const item = scheduler.getCameraById(camId);
+    if (!item) return;
+    item.texture = texture;
+    const slot = scheduler.getSlotIndexById(camId);
+    if (slot >= 0) {
+      projectorMgr.sharedUniforms.uVideoTex.value[slot] = texture;
+    } else {
+      scheduler.update(performance.now(), true);
+    }
+  },
+  onStatus(msg) {
+    updateStatusBar(msg);
+  }
+});
 
 function injectSceneMaterials(root) {
   root.traverse((child) => {
@@ -82,6 +103,7 @@ function injectSceneMaterials(root) {
 let activeParkModel = createPracticeScene();
 injectSceneMaterials(activeParkModel);
 scene.add(activeParkModel);
+let walkableMeshes = collectWalkableMeshes(activeParkModel);
 
 // ==========================================
 // 3. 初始化 3D 采点工具（练习 4）
@@ -107,18 +129,30 @@ const hiddenInDepthPass = [helperGroup, pointPicker.markerGroup, yoloVisualGroup
 // ==========================================
 // 4. 配置加载与热重载机制
 // ==========================================
-const testCanvases = [];
 const bboxProjectors = new Map();
 const tracker3D = new MultiCamTracker3D({ personThreshold: 1.8 });
 let currentConfig = null;
 let ptzItem = null;
 
+function refreshStreamCameraSelect(cameras) {
+  const prev = streamCamSelect.value;
+  streamCamSelect.innerHTML = '';
+  cameras.forEach((c) => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = `${c.name} (${c.id})`;
+    streamCamSelect.appendChild(opt);
+  });
+  if (prev && cameras.some((c) => c.id === prev)) {
+    streamCamSelect.value = prev;
+  }
+}
+
 function applyCamerasConfig(config) {
   currentConfig = config;
   scheduler.clearAll();
   bboxProjectors.clear();
-  testCanvases.forEach((c) => c.texture.dispose());
-  testCanvases.length = 0;
+  streamMgr.disposeAll();
   ptzItem = null;
 
   const colors = ['#00e5ff', '#ff9f1c', '#a855f7'];
@@ -149,10 +183,9 @@ function applyCamerasConfig(config) {
       console.warn(`[标定精度提示] ${cfg.id} 重投影误差偏高: ${cfg.extrinsics.reprojectionErrorPx} px`);
     }
 
-    const mockTex = createTestCanvasTexture(cfg.id.toUpperCase(), colors[idx % colors.length]);
-    testCanvases.push(mockTex);
-
+    const canvasAsset = createTestCanvasTexture(cfg.id.toUpperCase(), colors[idx % colors.length]);
     const ptzCtrl = cfg.type === 'ptz' ? new PTZController(cam, intr, dist, cfg.ptz) : null;
+
     const item = scheduler.registerCamera({
       id: cfg.id,
       name: cfg.name || cfg.id,
@@ -161,19 +194,27 @@ function applyCamerasConfig(config) {
       intrinsics: intr,
       distortion: dist,
       colorAdjust,
-      texture: mockTex.texture,
+      texture: canvasAsset.texture,
       ptzController: ptzCtrl,
       rawConfig: cfg
     });
 
+    if (cfg.stream?.url) {
+      streamMgr.bindStreamUrl(cfg.id, cfg.stream.url, cfg.stream.type || 'auto', cfg.stream.autoSuspend !== false);
+    } else {
+      streamMgr.bindCanvas(cfg.id, canvasAsset);
+    }
+
     if (cfg.type === 'ptz') ptzItem = item;
-    bboxProjectors.set(cfg.id, new BBoxProjector(cam, intr, dist));
+    bboxProjectors.set(cfg.id, new BBoxProjector(cam, intr, dist, walkableMeshes));
   });
 
   scheduler.update(performance.now(), true);
+  streamMgr.syncActiveCameras(scheduler.activeIds, performance.now());
   projectorMgr.renderAllDepthMaps(renderer, hiddenInDepthPass);
   updateStatusBar();
   refreshTuneCameraOptions();
+  refreshStreamCameraSelect(scheduler.logicalCameras);
 }
 
 fetch('/config/park_cameras.json')
@@ -194,29 +235,33 @@ document.getElementById('json-upload').onchange = async (e) => {
 };
 
 // ==========================================
-// 5. 本地视频上传与 Draco GLB 上传（带显存清理与自动居中）
+// 5. 多路本地视频 / 远程流接入与离线 Draco GLB 上传
 // ==========================================
-let lastVideoUrl = null;
-let lastVideoTexture = null;
-const localVideo = Object.assign(document.createElement('video'), { muted: true, loop: true, playsInline: true });
-
 document.getElementById('video-upload').onchange = (e) => {
   const file = e.target.files[0];
-  if (!file || !scheduler.logicalCameras[0]) return;
-  if (lastVideoUrl) URL.revokeObjectURL(lastVideoUrl);
-  if (lastVideoTexture) lastVideoTexture.dispose();
-
-  lastVideoUrl = URL.createObjectURL(file);
-  localVideo.src = lastVideoUrl;
-  localVideo.play();
-
-  lastVideoTexture = new THREE.VideoTexture(localVideo);
-  lastVideoTexture.colorSpace = THREE.SRGBColorSpace;
-  scheduler.logicalCameras[0].texture = lastVideoTexture;
-  scheduler.update(performance.now(), true);
+  const targetId = streamCamSelect.value || scheduler.logicalCameras[0]?.id;
+  if (!file || !targetId) return;
+  streamMgr.bindLocalFile(targetId, file);
 };
 
-// 配置支持 Draco 压缩的 GLTFLoader（使用 Vite 拷贝的本地静态资源，支持内网离线）
+document.getElementById('btn-bind-stream').onclick = () => {
+  const url = document.getElementById('stream-url-input').value.trim();
+  const targetId = streamCamSelect.value || scheduler.logicalCameras[0]?.id;
+  if (!url || !targetId) return alert('请先输入有效的流地址（MP4 / .m3u8 / WHEP）');
+  streamMgr.bindStreamUrl(targetId, url, 'auto', true);
+};
+
+document.getElementById('btn-reset-canvas').onclick = () => {
+  const targetId = streamCamSelect.value || scheduler.logicalCameras[0]?.id;
+  if (!targetId) return;
+  const idx = scheduler.logicalCameras.findIndex((c) => c.id === targetId);
+  const colors = ['#00e5ff', '#ff9f1c', '#a855f7'];
+  const asset = createTestCanvasTexture(targetId.toUpperCase(), colors[Math.max(idx, 0) % colors.length]);
+  streamMgr.bindCanvas(targetId, asset);
+  updateStatusBar(`[${targetId}] 已恢复动态测试画布`);
+};
+
+// 配置支持 Draco 压缩的 GLTFLoader（使用本地静态解码器，支持纯内网）
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('/draco/');
 const gltfLoader = new GLTFLoader();
@@ -232,13 +277,11 @@ document.getElementById('glb-upload').onchange = (e) => {
   gltfLoader.load(
     lastGlbUrl,
     (gltf) => {
-      // 彻底释放旧模型显存
       scene.remove(activeParkModel);
       disposeObject3D(activeParkModel);
 
       activeParkModel = gltf.scene;
 
-      // 可选：自动居中落底并适配观察相机
       if (document.getElementById('glb-auto-center').checked) {
         const box = new THREE.Box3().setFromObject(activeParkModel);
         const center = box.getCenter(new THREE.Vector3());
@@ -254,6 +297,8 @@ document.getElementById('glb-upload').onchange = (e) => {
       injectSceneMaterials(activeParkModel);
       scene.add(activeParkModel);
       pointPicker.targetRoot = activeParkModel;
+      walkableMeshes = collectWalkableMeshes(activeParkModel);
+      bboxProjectors.forEach((proj) => proj.setWalkableMeshes(walkableMeshes));
       projectorMgr.renderAllDepthMaps(renderer, hiddenInDepthPass);
     },
     undefined,
@@ -282,7 +327,6 @@ const state = {
 
 const gui = new GUI({ title: '数字孪生 v3.0 实操控制台' });
 
-// 文件夹 1：全局融合画质
 const f1 = gui.addFolder('练习 1：投影画质、PCF 与去拉伸');
 f1.add(state, 'enableOcclusion').name('开启深度遮挡').onChange((v) => (projectorMgr.sharedUniforms.uEnableOcclusion.value = v));
 f1.add(state, 'enablePCF').name('PCF 3×3 软边缘').onChange((v) => (projectorMgr.sharedUniforms.uEnablePCF.value = v));
@@ -292,7 +336,6 @@ f1.add(state, 'opacity', 0, 1, 0.05).name('融合透明度').onChange((v) => (pr
 f1.add(state, 'feather', 0, 0.2, 0.005).name('边缘羽化').onChange((v) => (projectorMgr.sharedUniforms.uFeather.value = v));
 f1.add(state, 'showHelpers').name('显示视锥体线框').onChange((v) => (helperGroup.visible = v));
 
-// 文件夹 2：可视化微调 + JSON 导出（练习 2 & 4）
 const tuneState = {
   selectedId: 'cam_fixed_01',
   posX: 0, posY: 8, posZ: 10,
@@ -360,7 +403,6 @@ function applyGuiToSelectedCam() {
     'YXZ'
   );
 
-  // 同步更新 FOV 与内参焦距 fx/fy
   const fovRad = THREE.MathUtils.degToRad(tuneState.fovY);
   const fy = (item.intrinsics.height * 0.5) / Math.tan(fovRad * 0.5);
   item.intrinsics.fovY = tuneState.fovY;
@@ -403,7 +445,7 @@ function exportUpdatedParkJson() {
         item.camera.updateMatrixWorld(true);
         matrixWorld = item.camera.matrixWorld;
       }
-      const e = matrixWorld.elements; // Three.js 为列优先，转置为行优先导出
+      const e = matrixWorld.elements;
       const rowMajor = [
         e[0], e[4], e[8], e[12],
         e[1], e[5], e[9], e[13],
@@ -434,6 +476,31 @@ function exportUpdatedParkJson() {
   URL.revokeObjectURL(url);
 }
 
+// 挂载 Web 端 2D/3D 联合标定弹窗
+mountWebCalibratorModal({
+  getSelectedCamera: () => scheduler.getCameraById(tuneState.selectedId) || scheduler.logicalCameras[0],
+  getCaptureSource: (camId) => streamMgr.getCaptureSource(camId),
+  getPoints3D: () => pointPicker.points,
+  onApplyCalibration(camItem, result) {
+    camItem.camera.position.copy(result.position);
+    camItem.camera.quaternion.copy(result.quaternion);
+    camItem.camera.updateMatrixWorld(true);
+
+    scheduler.refreshCameraBounds(camItem);
+    if (camItem.ptzController) {
+      camItem.ptzController.syncBaseFromCamera(camItem.intrinsics, camItem.distortion);
+    }
+    bboxProjectors.get(camItem.id)?.setCalibration(camItem.intrinsics, camItem.distortion);
+    loadSelectedCamToGui();
+
+    const slot = scheduler.getSlotIndexById(camItem.id);
+    if (slot >= 0) {
+      projectorMgr.renderSingleDepthMap(renderer, slot, hiddenInDepthPass);
+    }
+    updateStatusBar(`[${camItem.id}] Web PnP 标定完成 (${result.reprojectionErrorPx} px)`);
+  }
+});
+
 // 文件夹 3：球机 PTZ 巡航与变焦（练习 3）
 const f3 = gui.addFolder('练习 3：球机 PTZ 巡航与光学变焦');
 f3.add(state, 'ptzAutoPatrol').name('开启球机自动巡航(含变焦)');
@@ -444,8 +511,8 @@ f3.add(state, 'ptzLatencyMs', 0, 1000, 50).name('视频延迟补偿(ms)').onChan
 // 文件夹 4：大园区调度与 AI 业务闭环（练习 5 & 6）
 const f5 = gui.addFolder('练习 5 & 6：30路调度与 AI 闭环');
 f5.add(state, 'stressTest30Cams').name('注入 27 路虚拟监控(共30路)').onChange((v) => {
-  if (!v || scheduler.logicalCameras.length >= 30 || !testCanvases.length) return;
-  const baseTex = testCanvases[0].texture;
+  if (!v || scheduler.logicalCameras.length >= 30 || !scheduler.logicalCameras.length) return;
+  const baseTex = scheduler.logicalCameras[0].texture;
   for (let i = 4; i <= 30; i++) {
     const cam = new THREE.PerspectiveCamera(45, 16 / 9, 0.5, 30);
     const angle = (i / 27) * Math.PI * 2;
@@ -453,7 +520,7 @@ f5.add(state, 'stressTest30Cams').name('注入 27 路虚拟监控(共30路)').on
     cam.lookAt(0, 2, 0);
     cam.updateMatrixWorld(true);
     scheduler.registerCamera({
-      id: `cam_stress_${i}`, type: 'fixed', camera: cam, texture: baseTex,
+      id: `cam_stress_${i}`, name: `虚拟监控 ${i}`, type: 'fixed', camera: cam, texture: baseTex,
       intrinsics: { width: 1920, height: 1080, fx: 1300, fy: 1300, cx: 960, cy: 540, fovY: 45, depthFovScale: 1.0 },
       distortion: { k1: 0, k2: 0, p1: 0, p2: 0 }
     });
@@ -493,12 +560,15 @@ function animate(now) {
   frameCount++;
 
   controls.update();
-  testCanvases.forEach((c) => c.update(elapsed));
+  streamMgr.updateCanvases(elapsed);
 
-  // A. 动态视锥体调度（仅槽位变更时重绘深度图）
+  // A. 视线焦点感知动态调度（仅槽位变更时重绘深度图，并联动流媒体休眠/恢复）
   if (scheduler.update(now)) {
     projectorMgr.renderAllDepthMaps(renderer, hiddenInDepthPass);
     updateStatusBar();
+  }
+  if (frameCount % 30 === 0) {
+    streamMgr.syncActiveCameras(scheduler.activeIds, now);
   }
 
   // B. 球机 PTZ 巡航（含 Pan + 光学变焦 Zoom 联动内参与畸变）
@@ -507,7 +577,7 @@ function animate(now) {
       ptzItem.ptzController.pushOnvifData({
         pan: Math.sin(elapsed * 0.55) * 0.8,
         tilt: Math.sin(elapsed * 0.3) * 0.2,
-        zoom: (Math.sin(elapsed * 0.4) + 1) * 0.35 // 模拟 0 ~ 0.7 平滑变焦
+        zoom: (Math.sin(elapsed * 0.4) + 1) * 0.35
       });
     }
     const ptzUpdate = ptzItem.ptzController.update(dt);
@@ -526,7 +596,7 @@ function animate(now) {
     }
   }
 
-  // C. YOLO 2D 反投影 + 跨镜去重 + 尾迹 + 电子围栏告警（练习 6）
+  // C. YOLO 2D 反投影（3D 地形网格求交） + 卡尔曼滤波与匈牙利跨镜追踪 + 电子围栏告警（练习 6）
   if (state.enableMockYolo && frameCount % 3 === 0) {
     const detMap = generateMockYoloDetections(elapsed, scheduler.logicalCameras);
     const observations = [];
@@ -534,11 +604,15 @@ function animate(now) {
       const proj = bboxProjectors.get(camId);
       if (!proj) continue;
       for (const d of dets) {
-        const hit = proj.projectToPlane(d.bbox, 0);
+        const hit = proj.projectToScene(d.bbox, 0);
         if (hit) {
           observations.push({
-            camId, localTrackId: d.trackId, cls: d.cls,
-            x: hit.x, y: hit.y, z: hit.z,
+            camId,
+            localTrackId: d.trackId,
+            cls: d.cls,
+            x: hit.x,
+            y: hit.y,
+            z: hit.z,
             distToCam: hit.distanceTo(proj.camera.position)
           });
         }

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "2.0.0",
+  "schemaVersion": "3.0.0",
   "scene": {
     "coordinateSystem": "threejs-y-up",
     "unit": "meter"
@@ -10,6 +10,11 @@
       "name": "左侧固定枪机",
       "type": "fixed",
       "enabled": true,
+      "stream": {
+        "type": "canvas",
+        "url": "",
+        "autoSuspend": true
+      },
       "position": [
         -10,
         8.5,
@@ -49,6 +54,11 @@
       "name": "右侧固定枪机",
       "type": "fixed",
       "enabled": true,
+      "stream": {
+        "type": "canvas",
+        "url": "",
+        "autoSuspend": true
+      },
       "position": [
         10,
         8.5,
@@ -88,6 +98,11 @@
       "name": "中央高点球机",
       "type": "ptz",
       "enabled": true,
+      "stream": {
+        "type": "canvas",
+        "url": "",
+        "autoSuspend": true
+      },
       "position": [
         0,
         12.0,
