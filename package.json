@@ -1,11 +1,12 @@
 {
-  "name": "dt-video-fusion-pro-v2",
+  "name": "cam3d-fusion-playground",
   "private": true,
-  "version": "2.0.0",
+  "version": "3.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "node tests/verify_all.mjs"
   },
   "dependencies": {
     "lil-gui": "^0.19.2",

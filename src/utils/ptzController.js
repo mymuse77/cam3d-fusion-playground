@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { syncDepthCameraFromIntrinsics } from './multiProjector.js';
 
 /**
  * 球机（PTZ）全通道控制器：
@@ -9,11 +10,10 @@ export class PTZController {
   constructor(camera, intrinsics, baseDistortion, options = {}) {
     this.camera = camera;
     this.camera.rotation.order = 'YXZ';
-    this.intrinsics = intrinsics;
+    this.intrinsics = { ...intrinsics };
+    this.baseIntrinsics = { ...intrinsics };
     this.baseDistortion = { ...baseDistortion };
     this.depthFovScale = intrinsics.depthFovScale || 1.1;
-
-    this.syncBaseFromCamera();
 
     this.panRangeRad = THREE.MathUtils.degToRad(options.panRangeDeg ?? 120);
     this.tiltMinRad = THREE.MathUtils.degToRad(options.tiltMinDeg ?? -60);
@@ -23,19 +23,44 @@ export class PTZController {
     this.sensorHeightMm = options.sensorHeightMm ?? 3.6;
     this.videoLatencyMs = options.videoLatencyMs ?? 300;
 
+    this.syncBaseFromCamera();
+
     this.buffer = [];
     this.target = { yaw: this.baseYaw, pitch: this.basePitch, zoom: 0 };
     this.current = { yaw: this.baseYaw, pitch: this.basePitch, zoom: 0 };
   }
 
   /**
-   * 若用户在 GUI 手动微调了球机基准姿态，重新同步基准角
+   * 若用户在 GUI 手动微调了球机基准姿态/内参/畸变，重新同步安装基准
    */
-  syncBaseFromCamera() {
-    const baseEuler = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
+  syncBaseFromCamera(intrinsics = null, distortion = null) {
+    this.camera.updateMatrixWorld(true);
+    this.basePosition = this.camera.position.clone();
+    this.baseQuaternion = this.camera.quaternion.clone();
+    if (intrinsics) {
+      this.intrinsics = { ...intrinsics };
+      this.baseIntrinsics = { ...intrinsics };
+    }
+    if (distortion) {
+      this.baseDistortion = { ...distortion };
+    }
+    const baseEuler = new THREE.Euler().setFromQuaternion(this.baseQuaternion, 'YXZ');
     this.basePitch = baseEuler.x;
     this.baseYaw = baseEuler.y;
     this.baseRoll = baseEuler.z;
+    if (this.target && this.current) {
+      this.target.yaw = this.baseYaw;
+      this.target.pitch = this.basePitch;
+      this.current.yaw = this.baseYaw;
+      this.current.pitch = this.basePitch;
+    }
+  }
+
+  /**
+   * 获取未受巡航瞬时姿态污染的纯净安装基准 matrixWorld
+   */
+  getBaseMatrixWorld() {
+    return new THREE.Matrix4().compose(this.basePosition, this.baseQuaternion, new THREE.Vector3(1, 1, 1));
   }
 
   /**
@@ -43,7 +68,8 @@ export class PTZController {
    */
   pushOnvifData({ pan = 0, tilt = 0, zoom = 0 }) {
     const deltaYaw = -pan * (this.panRangeRad * 0.5);
-    const deltaPitch = tilt * THREE.MathUtils.degToRad(15);
+    const tiltHalfSpan = Math.max((this.tiltMaxRad - this.tiltMinRad) * 0.5, THREE.MathUtils.degToRad(15));
+    const deltaPitch = tilt * tiltHalfSpan;
 
     this.buffer.push({
       applyTime: performance.now() + this.videoLatencyMs,
@@ -90,12 +116,10 @@ export class PTZController {
     const halfFovRad = Math.atan(this.sensorHeightMm / (2 * focalMm));
     const fovY = THREE.MathUtils.radToDeg(2 * halfFovRad);
 
-    this.camera.fov = fovY * this.depthFovScale;
-    this.camera.updateProjectionMatrix();
-    this.camera.updateMatrixWorld(true);
-
     const fy = (this.intrinsics.height * 0.5) / Math.tan(halfFovRad);
     const dynamicIntrinsics = { ...this.intrinsics, fx: fy, fy, fovY };
+    syncDepthCameraFromIntrinsics(this.camera, dynamicIntrinsics);
+    this.camera.updateMatrixWorld(true);
 
     // 3. 长焦端广角畸变自然衰减（zoom=0 保留 100% 畸变，zoom=1 衰减至 15%）
     const distScale = 1.0 - this.current.zoom * 0.85;

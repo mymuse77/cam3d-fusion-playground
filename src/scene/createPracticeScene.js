@@ -18,6 +18,7 @@ export function createPracticeScene() {
 
   const grid = new THREE.GridHelper(80, 40, 0x555555, 0x2c3035);
   grid.position.y = 0.02;
+  grid.userData.excludeFromDepth = true;
   group.add(grid);
 
   const mainBuilding = new THREE.Mesh(new THREE.BoxGeometry(18, 8, 8), makeMat(0x7d8a97));

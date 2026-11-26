@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { projectCameraPointToPixel } from './bboxProjector.js';
 
 /**
  * 生成带 OSD 水印和扫描网格的动态测试画布（无本地视频时开箱即用）
@@ -50,11 +51,10 @@ export function generateMockYoloDetections(timeSec, cameras) {
     const viewPos = truePos.clone().applyMatrix4(item.camera.matrixWorldInverse);
     if (viewPos.z >= -0.5) continue;
 
-    const { fx, fy, cx, cy, width, height } = item.intrinsics;
-    const u = (viewPos.x / -viewPos.z) * fx + cx + (Math.random() - 0.5) * 6;
-    const v = (viewPos.y / viewPos.z) * fy + cy + (Math.random() - 0.5) * 6;
-
-    if (u >= 0 && u <= width && v >= 0 && v <= height) {
+    const pixel = projectCameraPointToPixel(viewPos, item.intrinsics, item.distortion);
+    if (pixel) {
+      const u = pixel.u + (Math.random() - 0.5) * 6;
+      const v = pixel.v + (Math.random() - 0.5) * 6;
       results.set(item.id, [
         { trackId: item.id === 'cam_fixed_01' ? 101 : 202, cls: 'person', bbox: [u - 30, v - 120, u + 30, v] }
       ]);

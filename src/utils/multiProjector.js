@@ -4,6 +4,24 @@ export const MAX_CAMS = 4;
 const DEPTH_MAP_SIZE = 1024;
 
 /**
+ * 根据相机内参及主点偏移动态计算深度渲染视场角（保证偏心主点与广角边缘深度覆盖完整）
+ */
+export function syncDepthCameraFromIntrinsics(cam, intr) {
+  const aspect = intr.width / intr.height;
+  const cxOffset = Math.abs((intr.cx ?? intr.width * 0.5) / intr.width - 0.5) * 2.0;
+  const cyOffset = Math.abs((intr.cy ?? intr.height * 0.5) / intr.height - 0.5) * 2.0;
+  const offsetScale = 1.0 + Math.max(cxOffset, cyOffset);
+  const baseScale = intr.depthFovScale || 1.0;
+  const effectiveScale = Math.max(baseScale, offsetScale);
+
+  cam.fov = Math.min((intr.fovY || 45) * effectiveScale, 150);
+  cam.aspect = aspect;
+  if (intr.near) cam.near = intr.near;
+  if (intr.far) cam.far = intr.far;
+  cam.updateProjectionMatrix();
+}
+
+/**
  * 物理渲染槽位管理器：负责维护 4 组 DepthRenderTarget 与共享 Shader Uniforms
  */
 export class MultiProjectorManager {
@@ -78,6 +96,15 @@ export class MultiProjectorManager {
     const prevVis = hiddenObjects.map((o) => o.visible);
     hiddenObjects.forEach((o) => (o.visible = false));
 
+    // 自动临时隐藏场景中的所有线条、点云、精灵及显式排除深度渲染的对象（防止污染深度缓冲）
+    const autoHidden = [];
+    this.scene.traverse((obj) => {
+      if ((obj.isLine || obj.isPoints || obj.isSprite || obj.userData?.excludeFromDepth) && obj.visible) {
+        autoHidden.push(obj);
+        obj.visible = false;
+      }
+    });
+
     this.scene.overrideMaterial = this.depthOverrideMat;
     cam.updateMatrixWorld();
     this.sharedUniforms.uProjViewMatrix.value[slotIdx].copy(cam.matrixWorldInverse);
@@ -89,6 +116,7 @@ export class MultiProjectorManager {
 
     this.scene.overrideMaterial = null;
     renderer.setRenderTarget(null);
+    autoHidden.forEach((o) => (o.visible = true));
     hiddenObjects.forEach((o, i) => (o.visible = prevVis[i]));
   }
 

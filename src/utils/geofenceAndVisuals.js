@@ -12,6 +12,7 @@ export class Geofence3D {
   constructor(polygonXZ, height = 2.6) {
     this.polygon = polygonXZ;
     this.group = new THREE.Group();
+    this.enabled = true;
     this.isAlarm = false;
 
     const positions = [];
@@ -101,7 +102,7 @@ export class TargetVisualManager {
     const alarmIds = [];
 
     for (const t of tracks) {
-      const inFence = geofence && geofence.group.visible && geofence.contains(t.x, t.z);
+      const inFence = geofence && geofence.enabled && geofence.contains(t.x, t.z);
       if (inFence) alarmIds.push(t.globalId);
 
       let entry = this.items.get(t.globalId);

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+public/draco/
+.vite/
+*.local
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc
+.venv/
+venv/
+python-tools/*.npz

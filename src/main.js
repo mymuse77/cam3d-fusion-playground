@@ -7,7 +7,7 @@ import GUI from 'lil-gui';
 import { createPracticeScene } from './scene/createPracticeScene.js';
 import { injectMultiProjection } from './shaders/injectMultiProjection.js';
 import { disposeObject3D } from './utils/disposeUtils.js';
-import { MultiProjectorManager } from './utils/multiProjector.js';
+import { MultiProjectorManager, syncDepthCameraFromIntrinsics } from './utils/multiProjector.js';
 import { CameraScheduler } from './utils/cameraScheduler.js';
 import { PTZController } from './utils/ptzController.js';
 import { PointPicker } from './utils/pointPicker.js';
@@ -71,6 +71,9 @@ function updateStatusBar() {
 function injectSceneMaterials(root) {
   root.traverse((child) => {
     if (!child.isMesh) return;
+    if (child.geometry && !child.geometry.attributes.normal) {
+      child.geometry.computeVertexNormals();
+    }
     const mats = Array.isArray(child.material) ? child.material : [child.material];
     mats.forEach((m) => injectMultiProjection(m, projectorMgr.sharedUniforms));
   });
@@ -131,6 +134,7 @@ function applyCamerasConfig(config) {
       intr.near || 0.5,
       intr.far || 60
     );
+    syncDepthCameraFromIntrinsics(cam, intr);
 
     if (cfg.extrinsics?.matrixWorldRowMajor) {
       const m = new THREE.Matrix4().set(...cfg.extrinsics.matrixWorldRowMajor);
@@ -212,9 +216,9 @@ document.getElementById('video-upload').onchange = (e) => {
   scheduler.update(performance.now(), true);
 };
 
-// 配置支持 Draco 压缩的 GLTFLoader
+// 配置支持 Draco 压缩的 GLTFLoader（使用 Vite 拷贝的本地静态资源，支持内网离线）
 const dracoLoader = new DRACOLoader();
-dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+dracoLoader.setDecoderPath('/draco/');
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(dracoLoader);
 
@@ -272,10 +276,11 @@ const state = {
   ptzLatencyMs: 300,
   stressTest30Cams: false,
   enableMockYolo: false,
+  enableGeofenceAlarm: true,
   showGeofence: false
 };
 
-const gui = new GUI({ title: '数字孪生 v2 实操控制台' });
+const gui = new GUI({ title: '数字孪生 v3.0 实操控制台' });
 
 // 文件夹 1：全局融合画质
 const f1 = gui.addFolder('练习 1：投影画质、PCF 与去拉伸');
@@ -361,7 +366,7 @@ function applyGuiToSelectedCam() {
   item.intrinsics.fovY = tuneState.fovY;
   item.intrinsics.fx = fy;
   item.intrinsics.fy = fy;
-  item.camera.fov = tuneState.fovY * (item.intrinsics.depthFovScale || 1.0);
+  syncDepthCameraFromIntrinsics(item.camera, item.intrinsics);
 
   item.distortion.k1 = tuneState.k1;
   item.distortion.k2 = tuneState.k2;
@@ -370,7 +375,10 @@ function applyGuiToSelectedCam() {
   item.colorAdjust.saturation = tuneState.saturation;
 
   scheduler.refreshCameraBounds(item);
-  if (item.ptzController) item.ptzController.syncBaseFromCamera();
+  if (item.ptzController) {
+    item.ptzController.syncBaseFromCamera(item.intrinsics, item.distortion);
+  }
+  bboxProjectors.get(item.id)?.setCalibration(item.intrinsics, item.distortion);
 
   const slot = scheduler.getSlotIndexById(item.id);
   if (slot >= 0) {
@@ -381,11 +389,21 @@ function applyGuiToSelectedCam() {
 
 function exportUpdatedParkJson() {
   const out = {
-    schemaVersion: '2.0.0',
+    schemaVersion: '3.0.0',
     scene: currentConfig?.scene || { coordinateSystem: 'threejs-y-up', unit: 'meter' },
     cameras: scheduler.logicalCameras.map((item) => {
-      item.camera.updateMatrixWorld(true);
-      const e = item.camera.matrixWorld.elements; // Three.js 为列优先，转置为行优先导出
+      let matrixWorld;
+      let intrOut = item.intrinsics;
+      let distOut = item.distortion;
+      if (item.ptzController) {
+        matrixWorld = item.ptzController.getBaseMatrixWorld();
+        intrOut = item.ptzController.baseIntrinsics;
+        distOut = item.ptzController.baseDistortion;
+      } else {
+        item.camera.updateMatrixWorld(true);
+        matrixWorld = item.camera.matrixWorld;
+      }
+      const e = matrixWorld.elements; // Three.js 为列优先，转置为行优先导出
       const rowMajor = [
         e[0], e[4], e[8], e[12],
         e[1], e[5], e[9], e[13],
@@ -399,8 +417,8 @@ function exportUpdatedParkJson() {
         name: item.name,
         type: item.type,
         enabled: true,
-        intrinsics: item.intrinsics,
-        distortion: item.distortion,
+        intrinsics: intrOut,
+        distortion: distOut,
         colorAdjust: item.colorAdjust,
         extrinsics: { matrixWorldRowMajor: rowMajor }
       };
@@ -451,12 +469,15 @@ f5.add(state, 'enableMockYolo').name('开启模拟 YOLO 跨镜追踪').onChange(
     geofence.setAlarmState(false);
   }
 });
-f5.add(state, 'showGeofence').name('显示 3D 电子围栏').onChange((v) => {
-  geofence.group.visible = v;
+f5.add(state, 'enableGeofenceAlarm').name('开启电子围栏越界检测').onChange((v) => {
+  geofence.enabled = v;
   if (!v) {
     alarmBanner.style.display = 'none';
     geofence.setAlarmState(false);
   }
+});
+f5.add(state, 'showGeofence').name('显示 3D 电子围栏光墙').onChange((v) => {
+  geofence.group.visible = v;
 });
 
 // ==========================================
@@ -492,6 +513,9 @@ function animate(now) {
     const ptzUpdate = ptzItem.ptzController.update(dt);
     if (ptzUpdate) {
       ptzItem.helper.update();
+      ptzItem.intrinsics = ptzUpdate.intrinsics;
+      ptzItem.distortion = ptzUpdate.distortion;
+      bboxProjectors.get(ptzItem.id)?.setCalibration(ptzUpdate.intrinsics, ptzUpdate.distortion);
       const slot = scheduler.getSlotIndexById(ptzItem.id);
       if (slot >= 0) {
         projectorMgr.setCalibration(slot, ptzUpdate.intrinsics, ptzUpdate.distortion, ptzItem.colorAdjust);
