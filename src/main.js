@@ -148,12 +148,21 @@ function refreshStreamCameraSelect(cameras) {
   }
 }
 
-function applyCamerasConfig(config) {
+async function applyCamerasConfig(config) {
   currentConfig = config;
   scheduler.clearAll();
   bboxProjectors.clear();
   streamMgr.disposeAll();
   ptzItem = null;
+
+  if (config.scene?.glbUrl) {
+    try {
+      await loadSceneModelFromUrl(config.scene.glbUrl, false);
+    } catch (err) {
+      console.error('场景 GLB 加载失败:', err);
+      alert('预设场景 GLB 加载失败: ' + err.message);
+    }
+  }
 
   const colors = ['#00e5ff', '#ff9f1c', '#a855f7'];
   config.cameras.forEach((cfg, idx) => {
@@ -267,43 +276,84 @@ dracoLoader.setDecoderPath('/draco/');
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(dracoLoader);
 
+function loadSceneModelFromUrl(url, autoCenter = false) {
+  return new Promise((resolve, reject) => {
+    gltfLoader.load(
+      url,
+      (gltf) => {
+        scene.remove(activeParkModel);
+        disposeObject3D(activeParkModel);
+
+        activeParkModel = gltf.scene;
+
+        if (autoCenter) {
+          const box = new THREE.Box3().setFromObject(activeParkModel);
+          const center = box.getCenter(new THREE.Vector3());
+          const size = box.getSize(new THREE.Vector3());
+          activeParkModel.position.set(-center.x, -box.min.y, -center.z);
+
+          const maxDim = Math.max(size.x, size.y, size.z, 10);
+          controls.target.set(0, size.y * 0.3, 0);
+          mainCamera.position.set(maxDim * 0.9, maxDim * 0.7, maxDim * 1.1);
+          controls.update();
+        }
+
+        injectSceneMaterials(activeParkModel);
+        scene.add(activeParkModel);
+        pointPicker.targetRoot = activeParkModel;
+        walkableMeshes = collectWalkableMeshes(activeParkModel);
+        bboxProjectors.forEach((proj) => proj.setWalkableMeshes(walkableMeshes));
+        projectorMgr.renderAllDepthMaps(renderer, hiddenInDepthPass);
+        resolve(activeParkModel);
+      },
+      undefined,
+      reject
+    );
+  });
+}
+
+function restoreDefaultPracticeScene() {
+  scene.remove(activeParkModel);
+  disposeObject3D(activeParkModel);
+  activeParkModel = createPracticeScene();
+  injectSceneMaterials(activeParkModel);
+  scene.add(activeParkModel);
+  pointPicker.targetRoot = activeParkModel;
+  walkableMeshes = collectWalkableMeshes(activeParkModel);
+  bboxProjectors.forEach((proj) => proj.setWalkableMeshes(walkableMeshes));
+  projectorMgr.renderAllDepthMaps(renderer, hiddenInDepthPass);
+}
+
+document.getElementById('btn-load-blender').onclick = async () => {
+  try {
+    const res = await fetch('/demo-blender/park_cameras_blender.json');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await applyCamerasConfig(await res.json());
+    updateStatusBar('已加载 Blender 5.3 成套实景与双路 MP4');
+  } catch (err) {
+    alert('加载 Blender 5.3 套组失败，请先运行 blender-tools/generate_blender_suite.py: ' + err.message);
+  }
+};
+
+document.getElementById('btn-load-default').onclick = async () => {
+  restoreDefaultPracticeScene();
+  const res = await fetch('/config/park_cameras.json');
+  await applyCamerasConfig(await res.json());
+  updateStatusBar('已恢复内置默认园区场景');
+};
+
 let lastGlbUrl = null;
-document.getElementById('glb-upload').onchange = (e) => {
+document.getElementById('glb-upload').onchange = async (e) => {
   const file = e.target.files[0];
   if (!file) return;
   if (lastGlbUrl) URL.revokeObjectURL(lastGlbUrl);
   lastGlbUrl = URL.createObjectURL(file);
 
-  gltfLoader.load(
-    lastGlbUrl,
-    (gltf) => {
-      scene.remove(activeParkModel);
-      disposeObject3D(activeParkModel);
-
-      activeParkModel = gltf.scene;
-
-      if (document.getElementById('glb-auto-center').checked) {
-        const box = new THREE.Box3().setFromObject(activeParkModel);
-        const center = box.getCenter(new THREE.Vector3());
-        const size = box.getSize(new THREE.Vector3());
-        activeParkModel.position.set(-center.x, -box.min.y, -center.z);
-
-        const maxDim = Math.max(size.x, size.y, size.z, 10);
-        controls.target.set(0, size.y * 0.3, 0);
-        mainCamera.position.set(maxDim * 0.9, maxDim * 0.7, maxDim * 1.1);
-        controls.update();
-      }
-
-      injectSceneMaterials(activeParkModel);
-      scene.add(activeParkModel);
-      pointPicker.targetRoot = activeParkModel;
-      walkableMeshes = collectWalkableMeshes(activeParkModel);
-      bboxProjectors.forEach((proj) => proj.setWalkableMeshes(walkableMeshes));
-      projectorMgr.renderAllDepthMaps(renderer, hiddenInDepthPass);
-    },
-    undefined,
-    (err) => alert('GLB 加载失败: ' + err.message)
-  );
+  try {
+    await loadSceneModelFromUrl(lastGlbUrl, document.getElementById('glb-auto-center').checked);
+  } catch (err) {
+    alert('GLB 加载失败: ' + err.message);
+  }
 };
 
 // ==========================================

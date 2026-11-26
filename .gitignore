@@ -10,3 +10,7 @@ __pycache__/
 .venv/
 venv/
 python-tools/*.npz
+public/demo-blender/
+.tmp_blender_frames/
+public/demo-blender-dirty/
+.tmp_dirty_frames/

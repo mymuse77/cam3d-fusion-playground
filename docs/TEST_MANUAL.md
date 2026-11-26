@@ -21,6 +21,15 @@ npm run dev
 - 3 个带彩色边框和扫描线的动态测试画布投影在场景中（`CAM_FIXED_01` 青色、`CAM_FIXED_02` 橙色、`CAM_PTZ_03` 紫色）。
 - 左上角状态栏显示：`激活槽位: 3 / 4 (池总数: 3)`。
 
+### 3. 一键运行 Blender 5.3 成套真值资产联调（可选）
+若本地已安装 Blender 5.3 与 FFmpeg，可执行以下命令一键生成真实同源园区模型 `public/demo-blender/blender_park.glb`、双路 720P 监控视频 `cam_fixed_01.mp4` / `cam_fixed_02.mp4` 及参考帧与控制点真值，再用 Python OpenCV 求解外参：
+```bash
+"D:\Env\Blender 5.3\blender.exe" --background --factory-startup --python blender-tools/generate_blender_suite.py
+python python-tools/calib_toolkit.py pnp --input public/demo-blender/calib_points_cam_fixed_01.json --config public/demo-blender/park_cameras_blender.json
+python python-tools/calib_toolkit.py pnp --input public/demo-blender/calib_points_cam_fixed_02.json --config public/demo-blender/park_cameras_blender.json
+```
+随后在页面左上角点击 **「加载 Blender 5.3 实景套组」**，即可直接查看两路 Blender 监控视频像素级投射到同源 3D 建筑上的融合效果（也可用 `public/demo-blender/cam_fixed_01_ref.png` 在 Web 标定台亲手练习 2D/3D 采点求解）。
+
 ---
 
 ## 二、6 大实操练习逐步骤指南
