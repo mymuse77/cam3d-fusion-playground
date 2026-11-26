@@ -30,6 +30,23 @@ python python-tools/calib_toolkit.py pnp --input public/demo-blender/calib_point
 ```
 随后在页面左上角点击 **「加载 Blender 5.3 实景套组」**，即可直接查看两路 Blender 监控视频像素级投射到同源 3D 建筑上的融合效果（也可用 `public/demo-blender/cam_fixed_01_ref.png` 在 Web 标定台亲手练习 2D/3D 采点求解）。
 
+### 4. 实景“脏数据 / 容错”压测套组（广角畸变、棋盘格标定、色差与模实偏差）
+如需压测真实工地常见痛点（桶形畸变+偏心光心、双机位冷暖曝光反差、施工移位+树木遮挡、支架滚转歪斜及采点手抖+误点 Outlier），可执行：
+```bash
+# 1. 生成 chess.mp4 棋盘格标定视频与两路脏数据压测视频
+python blender-tools/generate_dirty_suite.py
+
+# 2. 用 chess.mp4 标定相机真实内参与畸变系数
+python python-tools/calib_toolkit.py intrinsics --video public/demo-blender-dirty/chess.mp4 --export-intrinsics public/demo-blender-dirty/intrinsics_calibrated.json
+
+# 3. 运行带手抖噪声与误点剔除的 RANSAC+LM PnP 标定
+python python-tools/calib_toolkit.py pnp --input public/demo-blender-dirty/calib_points_cam_dirty_01.json --config public/demo-blender-dirty/park_cameras_dirty.json
+python python-tools/calib_toolkit.py pnp --input public/demo-blender-dirty/calib_points_cam_dirty_02.json --config public/demo-blender-dirty/park_cameras_dirty.json
+```
+在页面左上角点击 **「加载实景脏数据压测套组」** 即可体验对比：
+- 在 GUI 中将 `cam_dirty_01` 的 **「径向畸变 k1」** 临时归零 `0.0`，立即可观察未矫正时厂房边缘的桶形弯曲；调回 `-0.26` 后自动拉直对齐。
+- 将 `cam_dirty_01` / `cam_dirty_02` 的 **画面亮度 / 对比度 / 饱和度** 恢复默认值 `(0, 1, 1)`，可对比冷暖曝光色差与开启色彩匹配后的接缝融合效果；同时观察现场违建雨棚、树木和移位设备箱在设计白模上的投影表现。
+
 ---
 
 ## 二、6 大实操练习逐步骤指南

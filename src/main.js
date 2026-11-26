@@ -335,6 +335,17 @@ document.getElementById('btn-load-blender').onclick = async () => {
   }
 };
 
+document.getElementById('btn-load-dirty').onclick = async () => {
+  try {
+    const res = await fetch('/demo-blender-dirty/park_cameras_dirty.json');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await applyCamerasConfig(await res.json());
+    updateStatusBar('已加载实景脏数据压测套组 (广角畸变+色差+模实偏差)');
+  } catch (err) {
+    alert('加载实景脏数据压测套组失败，请先运行 blender-tools/generate_dirty_suite.py: ' + err.message);
+  }
+};
+
 document.getElementById('btn-load-default').onclick = async () => {
   restoreDefaultPracticeScene();
   const res = await fetch('/config/park_cameras.json');

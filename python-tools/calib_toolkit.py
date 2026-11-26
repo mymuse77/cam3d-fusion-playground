@@ -14,8 +14,12 @@ import cv2
 import numpy as np
 
 
-def run_intrinsics(video_path, pattern=(9, 6), interval=15, max_frames=25):
+def run_intrinsics(video_path, pattern=(9, 6), interval=15, max_frames=25, export_path=None):
     cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if 0 < total_frames < interval * max_frames:
+        interval = max(1, total_frames // max_frames)
+
     objp = np.zeros((pattern[0] * pattern[1], 3), np.float32)
     objp[:, :2] = np.mgrid[0:pattern[0], 0:pattern[1]].T.reshape(-1, 2) * 0.03
     obj_pts, img_pts, img_size, idx = [], [], None, 0
@@ -38,8 +42,38 @@ def run_intrinsics(video_path, pattern=(9, 6), interval=15, max_frames=25):
             print(f"有效帧 {len(obj_pts)}/{max_frames}")
     cap.release()
 
+    if len(obj_pts) < 3 or img_size is None:
+        raise RuntimeError(f"有效棋盘格帧数不足 ({len(obj_pts)} 帧)，无法完成内参标定")
+
     rms, K, dist, _, _ = cv2.calibrateCamera(obj_pts, img_pts, img_size, None, None, flags=cv2.CALIB_FIX_K3)
-    print(f"\nRMS 重投影误差: {rms:.4f} px\nK = {K.tolist()}\ndist = {dist.ravel()[:4].tolist()}")
+    dist_vec = dist.ravel()[:4].tolist()
+    print(f"\nRMS 重投影误差: {rms:.4f} px (有效帧 {len(obj_pts)})\nK = {K.tolist()}\ndist = {dist_vec}")
+
+    if export_path:
+        w, h = img_size
+        payload = {
+            "rms": round(float(rms), 4),
+            "validFrames": len(obj_pts),
+            "intrinsics": {
+                "width": w,
+                "height": h,
+                "fx": round(float(K[0][0]), 4),
+                "fy": round(float(K[1][1]), 4),
+                "cx": round(float(K[0][2]), 4),
+                "cy": round(float(K[1][2]), 4),
+                "fovY": round(2.0 * math.degrees(math.atan(h / (2.0 * K[1][1]))), 4),
+            },
+            "distortion": {
+                "k1": round(float(dist_vec[0]), 6),
+                "k2": round(float(dist_vec[1]), 6),
+                "p1": round(float(dist_vec[2]), 6),
+                "p2": round(float(dist_vec[3]), 6),
+            },
+        }
+        out_p = Path(export_path)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        out_p.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"已导出标定内参至: {out_p}")
 
 
 def run_verify(video_path, K, dist):
@@ -195,13 +229,14 @@ if __name__ == "__main__":
     parser.add_argument("--input", help="Web 标定台导出的 calib_points_*.json 路径")
     parser.add_argument("--cam-id", default=None, help="目标相机 ID（覆盖 JSON 内置 camId）")
     parser.add_argument("--config", default=str(default_config), help="park_cameras.json 路径")
+    parser.add_argument("--export-intrinsics", default=None, help="intrinsics 命令导出 JSON 文件路径")
     args = parser.parse_args()
 
     K_demo = [[1300.0, 0.0, 960.0], [0.0, 1300.0, 540.0], [0.0, 0.0, 1.0]]
     dist_demo = [-0.28, 0.09, 0.0, 0.0]
 
     if args.cmd == "intrinsics":
-        run_intrinsics(args.video)
+        run_intrinsics(args.video, export_path=args.export_intrinsics)
     elif args.cmd == "verify":
         run_verify(args.video, K_demo, dist_demo)
     elif args.cmd == "pick2d":
