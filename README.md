@@ -8,6 +8,7 @@
 
 - **逐步骤测试实操手册**：[`docs/TEST_MANUAL.md`](./docs/TEST_MANUAL.md)（包含 6 大练习详细步骤、Web 联合标定与 Python `solvePnPRansac` 联调流程、推荐调试参数与报错排查清单）
 - **视频与 GLB 模型规范**：[`docs/ASSET_REQUIREMENTS.md`](./docs/ASSET_REQUIREMENTS.md)（包含监控视频 H.264 转码 FFmpeg 命令、GLB 材质/法线/Unlit 兼容/坐标系/本地 Draco 说明）
+- **后续优化待办清单**：[`docs/TODO.md`](./docs/TODO.md)（记录 PTZ 调度联动、24/32-bit 自适应深度、第一视角比对、BVH 加速、3D 视频立牌与延迟贴花等演进规划）
 
 ---
 
