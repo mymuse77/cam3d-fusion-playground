@@ -14,3 +14,7 @@ public/demo-blender/
 .tmp_blender_frames/
 public/demo-blender-dirty/
 .tmp_dirty_frames/
+public/demo-epfl-terrace/
+.tmp_epfl/
+public/demo-nvidia-w16/
+.tmp_nvidia_w16/

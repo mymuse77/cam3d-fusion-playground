@@ -7,7 +7,7 @@ import GUI from 'lil-gui';
 import { createPracticeScene } from './scene/createPracticeScene.js';
 import { injectMultiProjection } from './shaders/injectMultiProjection.js';
 import { disposeObject3D } from './utils/disposeUtils.js';
-import { MultiProjectorManager, syncDepthCameraFromIntrinsics } from './utils/multiProjector.js';
+import { MultiProjectorManager, syncDepthCameraFromIntrinsics, MAX_CAMS } from './utils/multiProjector.js';
 import { CameraScheduler } from './utils/cameraScheduler.js';
 import { PTZController } from './utils/ptzController.js';
 import { PointPicker } from './utils/pointPicker.js';
@@ -15,6 +15,8 @@ import { BBoxProjector, collectWalkableMeshes } from './utils/bboxProjector.js';
 import { MultiCamTracker3D } from './utils/multiCamTracker3D.js';
 import { Geofence3D, TargetVisualManager } from './utils/geofenceAndVisuals.js';
 import { VideoStreamManager } from './utils/videoStreamManager.js';
+import { VideoBillboardManager } from './utils/videoBillboard.js';
+import { Avatar3DManager } from './utils/avatar3dManager.js';
 import { mountWebCalibratorModal } from './utils/webCalibrator.js';
 import { createTestCanvasTexture, generateMockYoloDetections } from './utils/mockData.js';
 
@@ -57,9 +59,14 @@ geofence.group.visible = false;
 scene.add(geofence.group);
 
 const targetVisualMgr = new TargetVisualManager(yoloVisualGroup, 45);
+const billboardMgr = new VideoBillboardManager();
+scene.add(billboardMgr.group);
+const avatarMgr = new Avatar3DManager();
+scene.add(avatarMgr.group);
 const alarmBanner = document.getElementById('alarm-banner');
 const statusBar = document.getElementById('status-bar');
 const streamCamSelect = document.getElementById('stream-cam-select');
+const foregroundModeSelect = document.getElementById('foreground-mode-select');
 
 // ==========================================
 // 2. 初始化多路投影管理器、视线焦点调度器与流生命周期管理器
@@ -68,7 +75,7 @@ const projectorMgr = new MultiProjectorManager(scene);
 const scheduler = new CameraScheduler(projectorMgr, mainCamera, helperGroup, () => controls.target);
 
 function updateStatusBar(extraMsg = '') {
-  const base = `激活槽位: ${scheduler.slotMap.length} / 4 (池总数: ${scheduler.logicalCameras.length})`;
+  const base = `激活槽位: ${scheduler.slotMap.length} / ${MAX_CAMS} (池总数: ${scheduler.logicalCameras.length})`;
   statusBar.textContent = extraMsg ? `${base} | ${extraMsg}` : base;
 }
 
@@ -80,6 +87,7 @@ const streamMgr = new VideoStreamManager({
     const slot = scheduler.getSlotIndexById(camId);
     if (slot >= 0) {
       projectorMgr.sharedUniforms.uVideoTex.value[slot] = texture;
+      projectorMgr.sharedUniforms.uIsVideoTex.value[slot] = texture?.isVideoTexture ? 1.0 : 0.0;
     } else {
       scheduler.update(performance.now(), true);
     }
@@ -124,7 +132,7 @@ document.getElementById('btn-copy-pts').onclick = async () => {
 document.getElementById('btn-undo-pt').onclick = () => pointPicker.undo();
 document.getElementById('btn-clear-pts').onclick = () => pointPicker.clear();
 
-const hiddenInDepthPass = [helperGroup, pointPicker.markerGroup, yoloVisualGroup, geofence.group];
+const hiddenInDepthPass = [helperGroup, pointPicker.markerGroup, yoloVisualGroup, geofence.group, billboardMgr.group];
 
 // ==========================================
 // 4. 配置加载与热重载机制
@@ -153,6 +161,8 @@ async function applyCamerasConfig(config) {
   scheduler.clearAll();
   bboxProjectors.clear();
   streamMgr.disposeAll();
+  billboardMgr.clear();
+  avatarMgr.clear();
   ptzItem = null;
 
   if (config.scene?.glbUrl) {
@@ -162,6 +172,22 @@ async function applyCamerasConfig(config) {
       console.error('场景 GLB 加载失败:', err);
       alert('预设场景 GLB 加载失败: ' + err.message);
     }
+  }
+
+  if (config.scene?.tracksUrl) {
+    fetch(config.scene.tracksUrl)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && currentConfig === config) {
+          billboardMgr.setExternalTracks(data);
+          avatarMgr.setExternalTracks(data);
+        }
+      })
+      .catch(() => {});
+  }
+
+  if (config.scene?.maskAtlasUrl) {
+    billboardMgr.setMaskAtlas(config.scene.maskAtlasUrl, config.scene.maskCamOrder);
   }
 
   const colors = ['#00e5ff', '#ff9f1c', '#a855f7'];
@@ -209,7 +235,13 @@ async function applyCamerasConfig(config) {
     });
 
     if (cfg.stream?.url) {
-      streamMgr.bindStreamUrl(cfg.id, cfg.stream.url, cfg.stream.type || 'auto', cfg.stream.autoSuspend !== false);
+      streamMgr.bindStreamUrl(
+        cfg.id,
+        cfg.stream.url,
+        cfg.stream.type || 'auto',
+        cfg.stream.autoSuspend !== false,
+        cfg.stream.bgUrl || ''
+      );
     } else {
       streamMgr.bindCanvas(cfg.id, canvasAsset);
     }
@@ -346,6 +378,56 @@ document.getElementById('btn-load-dirty').onclick = async () => {
   }
 };
 
+document.getElementById('btn-load-epfl').onclick = async () => {
+  try {
+    const res = await fetch('/demo-epfl-terrace/park_cameras_terrace.json');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await applyCamerasConfig(await res.json());
+    // 实景模式下默认隐藏视锥体线框、微调羽化与透明度以获得最佳视觉观感
+    state.showHelpers = false;
+    helperGroup.visible = false;
+    state.feather = 0.08;
+    projectorMgr.sharedUniforms.uFeather.value = 0.08;
+    state.opacity = 0.96;
+    projectorMgr.sharedUniforms.uOpacity.value = 0.96;
+    f1.controllersRecursive().forEach((c) => c.updateDisplay());
+
+    controls.target.set(0, 0.8, -0.5);
+    mainCamera.position.set(7.2, 6.2, 7.8);
+    controls.update();
+    updateStatusBar('已加载 EPFL Terrace 真实 4 路室外露台数据集');
+  } catch (err) {
+    alert('加载 EPFL Terrace 实景数据集失败，请先运行 scripts/prepare_epfl_terrace.py: ' + err.message);
+  }
+};
+
+document.getElementById('btn-load-nvidia').onclick = async () => {
+  try {
+    const res = await fetch('/demo-nvidia-w16/park_cameras_w16.json');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await applyCamerasConfig(await res.json());
+    // 6路仓库实景：默认隐藏视锥线框、优化掠射角与深度偏移使货架箱体侧面贴图完整
+    state.showHelpers = false;
+    helperGroup.visible = false;
+    state.grazingThreshold = 0.04;
+    projectorMgr.sharedUniforms.uGrazingThreshold.value = 0.04;
+    state.depthBias = 0.0015;
+    projectorMgr.sharedUniforms.uDepthBias.value = 0.0015;
+    state.feather = 0.08;
+    projectorMgr.sharedUniforms.uFeather.value = 0.08;
+    state.opacity = 0.96;
+    projectorMgr.sharedUniforms.uOpacity.value = 0.96;
+    f1.controllersRecursive().forEach((c) => c.updateDisplay());
+
+    controls.target.set(0.5, 0.8, 3.0);
+    mainCamera.position.set(-9.5, 9.5, 11.5);
+    controls.update();
+    updateStatusBar('已加载 NVIDIA Warehouse_016 实景数据集 (6路池 / Top-4动态调度)');
+  } catch (err) {
+    alert('加载 NVIDIA Warehouse_016 实景数据集失败，请先运行 scripts/prepare_nvidia_warehouse.py: ' + err.message);
+  }
+};
+
 document.getElementById('btn-load-default').onclick = async () => {
   restoreDefaultPracticeScene();
   const res = await fetch('/config/park_cameras.json');
@@ -371,6 +453,8 @@ document.getElementById('glb-upload').onchange = async (e) => {
 // 6. GUI 控制台：画质调优 + 可视化微调导出 + 6 大练习
 // ==========================================
 const state = {
+  foregroundMode: 'billboard',
+  billboardThreshold: 0.095,
   enableOcclusion: true,
   enablePCF: true,
   depthBias: 0.0025,
@@ -389,6 +473,34 @@ const state = {
 const gui = new GUI({ title: '数字孪生 v3.0 实操控制台' });
 
 const f1 = gui.addFolder('练习 1：投影画质、PCF 与去拉伸');
+const fgModeCtrl = f1
+  .add(state, 'foregroundMode', {
+    '动静分离 + 3D 视频立牌(AI增强)': 'billboard',
+    '动静分离 + 3D 立体数字替身': 'avatar3d',
+    '原始视频直投 (含双影)': 'raw',
+    '纯静态背景 (无前景)': 'clean_bg'
+  })
+  .name('前景融合模式')
+  .onChange((mode) => applyForegroundMode(mode));
+f1.add(state, 'billboardThreshold', 0.05, 0.30, 0.005)
+  .name('立牌抠像阈值')
+  .onChange((v) => (billboardMgr.keyThreshold = v));
+
+function applyForegroundMode(mode) {
+  state.foregroundMode = mode;
+  streamMgr.setForegroundMode(mode);
+  billboardMgr.setVisible(mode === 'billboard');
+  avatarMgr.setVisible(mode === 'avatar3d');
+  if (foregroundModeSelect && foregroundModeSelect.value !== mode) {
+    foregroundModeSelect.value = mode;
+  }
+  fgModeCtrl.updateDisplay();
+}
+
+if (foregroundModeSelect) {
+  foregroundModeSelect.onchange = (e) => applyForegroundMode(e.target.value);
+}
+applyForegroundMode(state.foregroundMode);
 f1.add(state, 'enableOcclusion').name('开启深度遮挡').onChange((v) => (projectorMgr.sharedUniforms.uEnableOcclusion.value = v));
 f1.add(state, 'enablePCF').name('PCF 3×3 软边缘').onChange((v) => (projectorMgr.sharedUniforms.uEnablePCF.value = v));
 f1.add(state, 'depthBias', 0.0001, 0.02, 0.0002).name('深度偏移 Bias').onChange((v) => (projectorMgr.sharedUniforms.uDepthBias.value = v));
@@ -621,7 +733,19 @@ function animate(now) {
   frameCount++;
 
   controls.update();
-  streamMgr.updateCanvases(elapsed);
+  streamMgr.update(elapsed, now);
+  if (state.foregroundMode === 'billboard') {
+    billboardMgr.update(now, scheduler.logicalCameras, bboxProjectors, streamMgr, mainCamera);
+  } else if (state.foregroundMode === 'avatar3d') {
+    if (!avatarMgr._externalTracks) {
+      // 无外部真值轨迹时（如 Blender/EPFL 实景），静默运行视觉检测器为 3D 替身提供实时落脚点
+      if (now - billboardMgr._lastDetectMs >= 33) {
+        billboardMgr._lastDetectMs = now;
+        billboardMgr._detectAndCluster(now, scheduler.logicalCameras, bboxProjectors, streamMgr);
+      }
+    }
+    avatarMgr.update(dt, now, streamMgr, billboardMgr._tracks);
+  }
 
   // A. 视线焦点感知动态调度（仅槽位变更时重绘深度图，并联动流媒体休眠/恢复）
   if (scheduler.update(now)) {

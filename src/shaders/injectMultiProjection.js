@@ -2,7 +2,7 @@ import { MAX_CAMS } from '../utils/multiProjector.js';
 
 /**
  * v3 材质投影注入器：
- * 1. 多路视频投影与重叠区加权融合（静态槽位采样分发，兼容 ANGLE/移动端）
+ * 1. 多路视频投影与重叠区加权融合（静态槽位采样分发，兼容 ANGLE/移动端，支持最高 6 路并发槽位）
  * 2. OpenCV Brown-Conrady 正向广角畸变矫正
  * 3. PCF 3x3 软边缘深度遮挡剔除（消除锯齿与穿模）
  * 4. 掠射角（Grazing Angle）法线衰减（支持非等比缩放、镜像模型、InstancedMesh 与 Unlit 材质）
@@ -65,6 +65,7 @@ export function injectMultiProjection(material, sharedUniforms) {
          #define MAX_CAMS ${MAX_CAMS}
          uniform int uActiveCams;
          uniform sampler2D uVideoTex[MAX_CAMS];
+         uniform float uIsVideoTex[MAX_CAMS];
          uniform sampler2D uDepthMap[MAX_CAMS];
          uniform mat4 uProjViewMatrix[MAX_CAMS];
          uniform mat4 uProjProjectionMatrix[MAX_CAMS];
@@ -86,14 +87,18 @@ export function injectMultiProjection(material, sharedUniforms) {
            if (idx == 0) return texture2D(uVideoTex[0], uv);
            else if (idx == 1) return texture2D(uVideoTex[1], uv);
            else if (idx == 2) return texture2D(uVideoTex[2], uv);
-           else return texture2D(uVideoTex[3], uv);
+           else if (idx == 3) return texture2D(uVideoTex[3], uv);
+           else if (idx == 4) return texture2D(uVideoTex[4], uv);
+           else return texture2D(uVideoTex[5], uv);
          }
 
          float sampleDepthSlot(int idx, vec2 uv) {
            if (idx == 0) return texture2D(uDepthMap[0], uv).r;
            else if (idx == 1) return texture2D(uDepthMap[1], uv).r;
            else if (idx == 2) return texture2D(uDepthMap[2], uv).r;
-           else return texture2D(uDepthMap[3], uv).r;
+           else if (idx == 3) return texture2D(uDepthMap[3], uv).r;
+           else if (idx == 4) return texture2D(uDepthMap[4], uv).r;
+           else return texture2D(uDepthMap[5], uv).r;
          }
 
          // OpenCV Brown-Conrady 正向畸变映射
@@ -190,6 +195,10 @@ export function injectMultiProjection(material, sharedUniforms) {
           float weight = edgeWeight * grazingWeight * visibility;
 
           vec3 rawVideo = sampleVideoSlot(i, videoUV).rgb;
+          // WebGL2 下 VideoTexture 未经硬件 sRGB->Linear 解码，需手动解码以与静态背景/PBR 色彩空间一致
+          if (uIsVideoTex[i] > 0.5) {
+            rawVideo = pow(max(rawVideo, vec3(0.0)), vec3(2.2));
+          }
           vec3 videoColor = applyColorAdjust(rawVideo, uColorAdjust[i]);
 
           accumVideo += videoColor * weight;

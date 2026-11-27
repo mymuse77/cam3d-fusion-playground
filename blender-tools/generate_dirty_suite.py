@@ -166,6 +166,7 @@ def warp_and_grade_cameras():
         prof = isp_profiles[cid]
 
         frames = sorted(src_dir.glob("frame_*.png"))
+        warped_stack = []
         for idx, fpath in enumerate(frames):
             raw = cv2.imread(str(fpath))
             warped = cv2.remap(raw, map_x, map_y, interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_CONSTANT)
@@ -176,8 +177,12 @@ def warp_and_grade_cameras():
             graded += rng.normal(0.0, 2.2, graded.shape).astype(np.float32)
             out_img = np.clip(graded, 0, 255).astype(np.uint8)
             cv2.imwrite(str(dst_dir / fpath.name), out_img)
+            warped_stack.append(out_img)
             if idx == 0:
                 cv2.imwrite(str(OUT_DIR / f"{cid}_ref.png"), out_img)
+
+        bg_median = np.median(np.stack(warped_stack, axis=0), axis=0).astype(np.uint8)
+        cv2.imwrite(str(OUT_DIR / f"{cid}_bg.png"), bg_median)
 
         mp4_path = OUT_DIR / f"{cid}.mp4"
         subprocess.run(
@@ -231,7 +236,12 @@ def warp_and_grade_cameras():
             "name": prof["name"],
             "type": "fixed",
             "enabled": True,
-            "stream": {"type": "mp4", "url": f"/demo-blender-dirty/{cid}.mp4", "autoSuspend": True},
+            "stream": {
+                "type": "mp4",
+                "url": f"/demo-blender-dirty/{cid}.mp4",
+                "bgUrl": f"/demo-blender-dirty/{cid}_bg.png",
+                "autoSuspend": True,
+            },
             "intrinsics": intr_true_dict,
             "distortion": dist_true_dict,
             "colorAdjust": prof["colorAdjust"],

@@ -197,7 +197,7 @@ def build_scene():
         if col != dyn_col:
             col.objects.unlink(worker)
 
-    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.2, location=(0, 0, 1.65))
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.2, location=(0, 0, 0.96))
     helmet = bpy.context.active_object
     helmet.name = "InspectorA_Helmet"
     helmet.data.materials.append(mat_helmet)
@@ -368,7 +368,12 @@ def build_scene():
             "name": spec["name"],
             "type": "fixed",
             "enabled": True,
-            "stream": {"type": "mp4", "url": f"/demo-blender/{cam_id}.mp4", "autoSuspend": True},
+            "stream": {
+                "type": "mp4",
+                "url": f"/demo-blender/{cam_id}.mp4",
+                "bgUrl": f"/demo-blender/{cam_id}_bg.png",
+                "autoSuspend": True,
+            },
             "intrinsics": intrinsics,
             "distortion": distortion,
             "colorAdjust": {"brightness": 0.0, "contrast": 1.0, "saturation": 1.0},

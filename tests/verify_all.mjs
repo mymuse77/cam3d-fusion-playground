@@ -9,6 +9,7 @@ import { MultiProjectorManager } from '../src/utils/multiProjector.js';
 import { PTZController } from '../src/utils/ptzController.js';
 import { Geofence3D, TargetVisualManager } from '../src/utils/geofenceAndVisuals.js';
 import { VideoStreamManager } from '../src/utils/videoStreamManager.js';
+import { extractForegroundBlobsFromRgba } from '../src/utils/videoBillboard.js';
 import { solveCameraPnP } from '../src/utils/webCalibrator.js';
 
 // Polyfill 最小 DOM 环境供 Three.js CanvasTexture / VideoStreamManager 在 Node 下运行
@@ -219,15 +220,15 @@ if (typeof globalThis.document === 'undefined') {
     };
   };
 
-  // 4 个离主相机更近但拍向左侧 (-15, 0, -10) 的相机
-  for (let i = 1; i <= 4; i++) {
+  // 6 个离主相机更近但拍向左侧 (-15, 0, -10) 的相机（超过 MAX_CAMS=6 容量以验证焦点抢占）
+  for (let i = 1; i <= 6; i++) {
     scheduler.registerCamera(mkCam(`cam_near_miss_${i}`, [-10 - i, 8, 25], [-16, 0, -10]));
   }
   // 1 个覆盖视线焦点 (20, 0, -10) 的远端相机
   scheduler.registerCamera(mkCam('cam_focus_hit', [20, 8, 8], [20, 0, -10]));
 
   scheduler.update(1000, true);
-  assert.ok(scheduler.activeIds.has('cam_focus_hit'), '视线焦点所在监控必须入选 Top 4 槽位');
+  assert.ok(scheduler.activeIds.has('cam_focus_hit'), '视线焦点所在监控必须入选 Top 槽位');
 
   // 流媒体休眠/恢复测试
   const streamMgr = new VideoStreamManager();
@@ -290,4 +291,38 @@ if (typeof globalThis.document === 'undefined') {
   console.log(
     `[PASS] 6. Web RANSAC+LM PnP 标定 (内点 ${result.inlierCount}/8, 误差 ${result.reprojectionErrorPx} px, 位姿误差 ${posErr.toExponential(2)} m)`
   );
+}
+
+// ==========================================
+// 7. 前景融合模式：运动前景检测、上下部件合并与地面暗影抑制
+// ==========================================
+{
+  const w = 160, h = 90;
+  const bg = new Uint8ClampedArray(w * h * 4);
+  const vid = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h * 4; i += 4) {
+    bg[i] = 110; bg[i + 1] = 115; bg[i + 2] = 122; bg[i + 3] = 255;
+    vid[i] = 110; vid[i + 1] = 115; vid[i + 2] = 122; vid[i + 3] = 255;
+  }
+
+  const paintRect = (arr, x1, y1, x2, y2, r, g, b) => {
+    for (let y = y1; y <= y2; y++) {
+      for (let x = x1; x <= x2; x++) {
+        const p = (y * w + x) * 4;
+        arr[p] = r; arr[p + 1] = g; arr[p + 2] = b; arr[p + 3] = 255;
+      }
+    }
+  };
+
+  // 绘制地面投射暗影（同色度、亮度减半）-> 应被 Cucchiara 阴影抑制完全过滤
+  paintRect(vid, 20, 50, 45, 70, 55, 58, 61);
+  // 绘制橙色身体 (x: 70..76, y: 46..62) + 间隔 4 格的黄色安全帽 (x: 71..75, y: 39..42) -> 应合并为 1 个检测框
+  paintRect(vid, 70, 46, 76, 62, 245, 110, 25);
+  paintRect(vid, 71, 39, 75, 42, 250, 225, 30);
+
+  const blobs = extractForegroundBlobsFromRgba(vid, bg, w, h, 1280, 720);
+  assert.equal(blobs.length, 1, `应过滤暗影并合并身体+安全帽为 1 个前景框，实际: ${blobs.length}`);
+  const [u1, v1, u2, v2] = blobs[0];
+  assert.ok(u1 > 500 && u2 < 650 && v1 < 330 && v2 > 490, `检测框范围异常: ${blobs[0]}`);
+  console.log(`[PASS] 7. 前景融合检测（暗影抑制 + 部位合并）-> bbox=[${blobs[0].map((n) => Math.round(n)).join(', ')}]`);
 }

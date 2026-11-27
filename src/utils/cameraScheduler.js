@@ -172,6 +172,7 @@ export class CameraScheduler {
     selected.forEach((item, slotIdx) => {
       this.projectorMgr.cameras[slotIdx] = item.camera;
       uniforms.uVideoTex.value[slotIdx] = item.texture;
+      uniforms.uIsVideoTex.value[slotIdx] = item.texture?.isVideoTexture ? 1.0 : 0.0;
       uniforms.uProjViewMatrix.value[slotIdx].copy(item.camera.matrixWorldInverse);
       uniforms.uProjProjectionMatrix.value[slotIdx].copy(item.camera.projectionMatrix);
       item.camera.getWorldPosition(uniforms.uProjCamPos.value[slotIdx]);

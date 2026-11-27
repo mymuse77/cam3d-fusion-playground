@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export const MAX_CAMS = 4;
+export const MAX_CAMS = 6;
 const DEPTH_MAP_SIZE = 1024;
 
 /**
@@ -37,13 +37,14 @@ export class MultiProjectorManager {
     for (let i = 0; i < MAX_CAMS; i++) {
       const rt = new THREE.WebGLRenderTarget(DEPTH_MAP_SIZE, DEPTH_MAP_SIZE);
       rt.depthTexture = new THREE.DepthTexture();
-      rt.depthTexture.type = THREE.UnsignedShortType;
+      rt.depthTexture.type = THREE.FloatType;
       this.depthTargets.push(rt);
     }
 
     this.sharedUniforms = {
       uActiveCams: { value: 0 },
       uVideoTex: { value: Array.from({ length: MAX_CAMS }, () => emptyTex) },
+      uIsVideoTex: { value: Array.from({ length: MAX_CAMS }, () => 0.0) },
       uDepthMap: { value: this.depthTargets.map((rt) => rt.depthTexture) },
       uProjViewMatrix: { value: Array.from({ length: MAX_CAMS }, () => new THREE.Matrix4()) },
       uProjProjectionMatrix: { value: Array.from({ length: MAX_CAMS }, () => new THREE.Matrix4()) },

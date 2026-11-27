@@ -79,7 +79,18 @@
       <div class="btn-row">
         <button id="btn-load-blender">加载 Blender 5.3 实景套组</button>
         <button id="btn-load-dirty">加载实景脏数据压测套组</button>
+        <button id="btn-load-epfl">加载 EPFL Terrace 实景(4路)</button>
+        <button id="btn-load-nvidia">加载 NVIDIA 仓库实景(6路)</button>
         <button id="btn-load-default" class="secondary">恢复内置默认场景</button>
+      </div>
+      <div class="file-row" style="margin-top:8px;">
+        <label>前景融合模式（消除运动目标躺地 V 字双影）</label>
+        <select id="foreground-mode-select">
+          <option value="billboard" selected>动静分离 + 3D 视频立牌（AI 掩膜增强）</option>
+          <option value="avatar3d">动静分离 + 3D 立体数字替身（360° 无死角）</option>
+          <option value="raw">原始视频直投（对比躺地 V 字双影）</option>
+          <option value="clean_bg">纯静态背景（隐藏动态前景 / 专心标定）</option>
+        </select>
       </div>
     </div>
 
