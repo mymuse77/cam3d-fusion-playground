@@ -18,7 +18,7 @@ export class VideoStreamManager {
     this.onTextureChange = onTextureChange;
     this.onStatus = onStatus;
     this.entries = new Map();
-    this.foregroundMode = 'billboard'; // 'billboard' | 'raw' | 'clean_bg'
+    this.foregroundMode = 'billboard'; // 'billboard' | 'freeview' | 'avatar3d' | 'raw' | 'clean_bg'
     this._visibilitySuspended = false;
 
     this._onVisibilityChange = () => {
@@ -57,7 +57,7 @@ export class VideoStreamManager {
   }
 
   setForegroundMode(mode) {
-    if (!['billboard', 'avatar3d', 'raw', 'clean_bg'].includes(mode)) return;
+    if (!['billboard', 'freeview', 'avatar3d', 'raw', 'clean_bg'].includes(mode)) return;
     this.foregroundMode = mode;
     for (const entry of this.entries.values()) {
       this._emitTexture(entry);

@@ -17,6 +17,7 @@ import { Geofence3D, TargetVisualManager } from './utils/geofenceAndVisuals.js';
 import { VideoStreamManager } from './utils/videoStreamManager.js';
 import { VideoBillboardManager } from './utils/videoBillboard.js';
 import { Avatar3DManager } from './utils/avatar3dManager.js';
+import { FreeViewpointFusion } from './utils/freeViewpointFusion.js';
 import { mountWebCalibratorModal } from './utils/webCalibrator.js';
 import { createTestCanvasTexture, generateMockYoloDetections } from './utils/mockData.js';
 
@@ -73,6 +74,8 @@ const foregroundModeSelect = document.getElementById('foreground-mode-select');
 // ==========================================
 const projectorMgr = new MultiProjectorManager(scene);
 const scheduler = new CameraScheduler(projectorMgr, mainCamera, helperGroup, () => controls.target);
+const freeViewMgr = new FreeViewpointFusion(projectorMgr.sharedUniforms);
+scene.add(freeViewMgr.group);
 
 function updateStatusBar(extraMsg = '') {
   const base = `激活槽位: ${scheduler.slotMap.length} / ${MAX_CAMS} (池总数: ${scheduler.logicalCameras.length})`;
@@ -163,6 +166,7 @@ async function applyCamerasConfig(config) {
   streamMgr.disposeAll();
   billboardMgr.clear();
   avatarMgr.clear();
+  freeViewMgr.clear();
   ptzItem = null;
 
   if (config.scene?.glbUrl) {
@@ -476,6 +480,7 @@ const f1 = gui.addFolder('练习 1：投影画质、PCF 与去拉伸');
 const fgModeCtrl = f1
   .add(state, 'foregroundMode', {
     '动静分离 + 3D 视频立牌(AI增强)': 'billboard',
+    '动静分离 + 多视角自由视点融合': 'freeview',
     '动静分离 + 3D 立体数字替身': 'avatar3d',
     '原始视频直投 (含双影)': 'raw',
     '纯静态背景 (无前景)': 'clean_bg'
@@ -483,14 +488,18 @@ const fgModeCtrl = f1
   .name('前景融合模式')
   .onChange((mode) => applyForegroundMode(mode));
 f1.add(state, 'billboardThreshold', 0.05, 0.30, 0.005)
-  .name('立牌抠像阈值')
-  .onChange((v) => (billboardMgr.keyThreshold = v));
+  .name('前景抠像阈值')
+  .onChange((v) => {
+    billboardMgr.keyThreshold = v;
+    freeViewMgr.keyThreshold = v;
+  });
 
 function applyForegroundMode(mode) {
   state.foregroundMode = mode;
   streamMgr.setForegroundMode(mode);
   billboardMgr.setVisible(mode === 'billboard');
   avatarMgr.setVisible(mode === 'avatar3d');
+  freeViewMgr.setVisible(mode === 'freeview');
   if (foregroundModeSelect && foregroundModeSelect.value !== mode) {
     foregroundModeSelect.value = mode;
   }
@@ -751,6 +760,11 @@ function animate(now) {
   if (scheduler.update(now)) {
     projectorMgr.renderAllDepthMaps(renderer, hiddenInDepthPass);
     updateStatusBar();
+  }
+  if (state.foregroundMode === 'freeview') {
+    // 自由视点融合依赖槽位与相机一一对应，须在调度器刷新槽位之后执行
+    const tracks = billboardMgr.updateTracks(now, scheduler.logicalCameras, bboxProjectors, streamMgr);
+    freeViewMgr.update(renderer, tracks, scheduler.slotMap, streamMgr, billboardMgr, mainCamera);
   }
   if (frameCount % 30 === 0) {
     streamMgr.syncActiveCameras(scheduler.activeIds, now);

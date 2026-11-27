@@ -29,7 +29,7 @@ python python-tools/calib_toolkit.py pnp --input public/demo-blender/calib_point
 python python-tools/calib_toolkit.py pnp --input public/demo-blender/calib_points_cam_fixed_02.json --config public/demo-blender/park_cameras_blender.json
 ```
 随后在页面左上角点击 **「加载 Blender 5.3 实景套组」**，即可直接查看两路 Blender 监控视频像素级投射到同源 3D 建筑上的融合效果（也可用 `public/demo-blender/cam_fixed_01_ref.png` 在 Web 标定台亲手练习 2D/3D 采点求解）。
-- **体验「前景融合模式」切换**：在左上角或右上角 GUI 切换 **「动静分离 + 3D 视频立牌（推荐）」**、**「原始视频直投（对比躺地 V 字双影）」** 与 **「纯静态背景（隐藏动态前景 / 专心标定）」**，直观对比消除地面重影前后将动态巡检员与 AGV 真正立在三维地面/高台上的效果。
+- **体验「前景融合模式」切换**：在左上角或右上角 GUI 切换 **「动静分离 + 3D 视频立牌（推荐）」**、**「动静分离 + 多视角自由视点融合」**（绕着目标转动视角，应看到目标随之换成对应侧相机拍到的真实正面 / 侧面 / 背面，脚下带接触阴影；NVIDIA 仓库实景下效果最佳）、**「原始视频直投（对比躺地 V 字双影）」** 与 **「纯静态背景（隐藏动态前景 / 专心标定）」**，直观对比消除地面重影前后将动态巡检员与 AGV 真正立在三维地面/高台上的效果。
 
 ### 4. 实景“脏数据 / 容错”压测套组（广角畸变、棋盘格标定、色差与模实偏差）
 如需压测真实工地常见痛点（桶形畸变+偏心光心、双机位冷暖曝光反差、施工移位+树木遮挡、支架滚转歪斜及采点手抖+误点 Outlier），可执行：

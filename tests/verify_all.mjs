@@ -10,6 +10,7 @@ import { PTZController } from '../src/utils/ptzController.js';
 import { Geofence3D, TargetVisualManager } from '../src/utils/geofenceAndVisuals.js';
 import { VideoStreamManager } from '../src/utils/videoStreamManager.js';
 import { extractForegroundBlobsFromRgba } from '../src/utils/videoBillboard.js';
+import { resolveCardPose } from '../src/utils/freeViewpointFusion.js';
 import { solveCameraPnP } from '../src/utils/webCalibrator.js';
 
 // Polyfill 最小 DOM 环境供 Three.js CanvasTexture / VideoStreamManager 在 Node 下运行
@@ -325,4 +326,44 @@ if (typeof globalThis.document === 'undefined') {
   const [u1, v1, u2, v2] = blobs[0];
   assert.ok(u1 > 500 && u2 < 650 && v1 < 330 && v2 > 490, `检测框范围异常: ${blobs[0]}`);
   console.log(`[PASS] 7. 前景融合检测（暗影抑制 + 部位合并）-> bbox=[${blobs[0].map((n) => Math.round(n)).join(', ')}]`);
+}
+
+// ==========================================
+// 8. 自由视点融合：承载面片朝向（相机方向与观察方向的角平分线）与尺寸解算
+// ==========================================
+{
+  const person = { x: 0, y: 0, z: 0, width: 0.7, height: 1.7 };
+  const camA = { x: 10, y: 6, z: 0 };
+  const camB = { x: 0, y: 6, z: 10 };
+  const angleOf = (n) => THREE.MathUtils.radToDeg(Math.atan2(n[1], n[0]));
+
+  assert.equal(resolveCardPose(person, [], camA), null, '没有任何相机看到目标时不应生成面片');
+
+  // 观察者与相机 A 同向：面片正对相机 A，此时画面与该路原始视频逐像素一致
+  const atCamA = resolveCardPose(person, [camA, camB], { x: 8, y: 5, z: 0 });
+  assert.ok(Math.abs(angleOf(atCamA.normal)) < 1, `面片应正对相机 A，实际法向角 ${angleOf(atCamA.normal)}°`);
+
+  // 观察者偏离唯一相机 60°：法向应取两者角平分线 (30°)，保证目标宽度不失真
+  const off60 = resolveCardPose(person, [camA], { x: 5, y: 3, z: 5 * Math.sqrt(3) });
+  assert.ok(Math.abs(angleOf(off60.normal) - 30) < 1, `法向应为 30° 角平分线，实际 ${angleOf(off60.normal)}°`);
+
+  // 观察者绕到唯一相机的正对面：面片正反面等价，应正对观察者而非侧立成一条线
+  const behind = resolveCardPose(person, [camA], { x: -8, y: 3, z: 0 });
+  assert.ok(Math.abs(Math.abs(angleOf(behind.normal)) - 180) < 1, `面片应正对背面观察者，实际 ${angleOf(behind.normal)}°`);
+
+  // 观察者更靠近相机 B：主纹理相机切换为 B，法向落在 B 与观察者之间
+  const nearB = resolveCardPose(person, [camA, camB], { x: 2, y: 5, z: 8 });
+  assert.ok(angleOf(nearB.normal) > 75 && angleOf(nearB.normal) < 90, `法向应靠近相机 B，实际 ${angleOf(nearB.normal)}°`);
+
+  // 直立目标：检测框宽度按身高比例封顶；提供真实占地宽度时直接采用
+  const wide = resolveCardPose({ ...person, width: 2.4 }, [camA], camA);
+  assert.ok(wide.bodyRadius < 0.45 && !wide.flat, `直立目标躯干半径应受身高约束，实际 ${wide.bodyRadius}`);
+  const exact = resolveCardPose({ ...person, width: 2.4, footprint: 0.52 }, [camA], camA);
+  assert.ok(Math.abs(exact.bodyRadius - 0.31) < 1e-6, `应采用真实占地宽度，实际 ${exact.bodyRadius}`);
+
+  // 低矮目标（AGV）改用盖在顶面高度的水平面片
+  const agv = resolveCardPose({ x: 0, y: 0, z: 0, width: 0.4, height: 0.2, footprint: 1.43 }, [camA], camB);
+  assert.ok(agv.flat && Math.abs(agv.height - 0.2) < 1e-9 && agv.bodyRadius > 0.7, 'AGV 应使用水平面片并覆盖完整占地');
+
+  console.log(`[PASS] 8. 自由视点融合面片解算（角平分线朝向 ${angleOf(off60.normal).toFixed(1)}° + 水平面片 + 尺寸先验）`);
 }

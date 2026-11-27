@@ -1,6 +1,41 @@
 import { MAX_CAMS } from '../utils/multiProjector.js';
 
 /**
+ * 相机成像模型 GLSL 片段：OpenCV 正向畸变投影 + 感知空间色彩调节（场景投影与自由视点融合共用）
+ */
+export const GLSL_CAMERA_MODEL = `
+         // OpenCV Brown-Conrady 正向畸变映射
+         vec2 computeDistortedUV(vec3 viewPos, vec4 intr, vec4 dist) {
+           float x = viewPos.x / (-viewPos.z);
+           float y = viewPos.y / viewPos.z;
+           float r2 = x * x + y * y;
+           if (r2 > 2.5) return vec2(-1.0);
+
+           float r4 = r2 * r2;
+           float k1 = dist.x, k2 = dist.y, p1 = dist.z, p2 = dist.w;
+           float radial = 1.0 + k1 * r2 + k2 * r4;
+
+           float xDist = x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x);
+           float yDist = y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y;
+
+           float u = xDist * intr.x + intr.z;
+           float vCV = yDist * intr.y + intr.w;
+           return vec2(u, 1.0 - vCV);
+         }
+
+         // 在感知均匀的 sRGB 空间执行亮度 / 对比度 / 饱和度调整，再转回 Linear 空间参与混合
+         vec3 applyColorAdjust(vec3 linearCol, vec4 adj) {
+           vec3 srgbCol = pow(max(linearCol, vec3(0.0)), vec3(1.0 / 2.2));
+           srgbCol += adj.x;
+           srgbCol = (srgbCol - 0.5) * adj.y + 0.5;
+           float luma = dot(srgbCol, vec3(0.2126, 0.7152, 0.0722));
+           srgbCol = mix(vec3(luma), srgbCol, adj.z);
+           srgbCol = clamp(srgbCol, 0.0, 1.0);
+           return pow(srgbCol, vec3(2.2));
+         }
+`;
+
+/**
  * v3 材质投影注入器：
  * 1. 多路视频投影与重叠区加权融合（静态槽位采样分发，兼容 ANGLE/移动端，支持最高 6 路并发槽位）
  * 2. OpenCV Brown-Conrady 正向广角畸变矫正
@@ -101,35 +136,7 @@ export function injectMultiProjection(material, sharedUniforms) {
            else return texture2D(uDepthMap[5], uv).r;
          }
 
-         // OpenCV Brown-Conrady 正向畸变映射
-         vec2 computeDistortedUV(vec3 viewPos, vec4 intr, vec4 dist) {
-           float x = viewPos.x / (-viewPos.z);
-           float y = viewPos.y / viewPos.z;
-           float r2 = x * x + y * y;
-           if (r2 > 2.5) return vec2(-1.0);
-
-           float r4 = r2 * r2;
-           float k1 = dist.x, k2 = dist.y, p1 = dist.z, p2 = dist.w;
-           float radial = 1.0 + k1 * r2 + k2 * r4;
-
-           float xDist = x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x);
-           float yDist = y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y;
-
-           float u = xDist * intr.x + intr.z;
-           float vCV = yDist * intr.y + intr.w;
-           return vec2(u, 1.0 - vCV);
-         }
-
-         // 在感知均匀的 sRGB 空间执行亮度 / 对比度 / 饱和度调整，再转回 Linear 空间参与混合
-         vec3 applyColorAdjust(vec3 linearCol, vec4 adj) {
-           vec3 srgbCol = pow(max(linearCol, vec3(0.0)), vec3(1.0 / 2.2));
-           srgbCol += adj.x;
-           srgbCol = (srgbCol - 0.5) * adj.y + 0.5;
-           float luma = dot(srgbCol, vec3(0.2126, 0.7152, 0.0722));
-           srgbCol = mix(vec3(luma), srgbCol, adj.z);
-           srgbCol = clamp(srgbCol, 0.0, 1.0);
-           return pow(srgbCol, vec3(2.2));
-         }`
+         ${GLSL_CAMERA_MODEL}`
       )
       .replace(
         '#include <tonemapping_fragment>',

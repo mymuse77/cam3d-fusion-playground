@@ -278,6 +278,7 @@ export class VideoBillboardManager {
     this._emptyMaskTex.needsUpdate = true;
     this._bgCache = new Map(); // camId -> { sourceEl, rgba }
     this._lastDetectMs = 0;
+    this._exposureGains = new Map(); // camId -> 实时帧相对静态背景的全局曝光增益
 
     this._ray = new THREE.Ray();
     this._dir = new THREE.Vector3();
@@ -366,6 +367,7 @@ export class VideoBillboardManager {
     this._extCamChoice.clear();
     this._disposeMaskAtlas();
     this._bgCache.clear();
+    this._exposureGains.clear();
     this._pool.forEach((m) => (m.visible = false));
     this._ringPool.forEach((r) => (r.visible = false));
     this._labelPool.forEach((l) => (l.visible = false));
@@ -632,6 +634,7 @@ export class VideoBillboardManager {
         z,
         width: worldW,
         height: worldH,
+        footprint: o0.s[0],
         crop: chosen.crop,
         videoTexture: chosen.pair.videoTexture,
         bgTexture: chosen.pair.bgTexture,
@@ -646,10 +649,10 @@ export class VideoBillboardManager {
   }
 
   /**
-   * 主渲染循环调用：若加载了外部高精度 3D 轨迹则按 60Hz 同步插值，否则以 ~30Hz 视觉检测前景
+   * 仅刷新三维目标轨迹（不更新立牌网格），供立牌与自由视点融合等前景呈现方式共用
    */
-  update(nowMs, logicalCameras, bboxProjectors, streamMgr, mainCamera) {
-    if (!this.visible || !this._detCtx) return;
+  updateTracks(nowMs, logicalCameras, bboxProjectors, streamMgr) {
+    if (!this._detCtx) return this._tracks;
 
     if (this._externalTracks) {
       // 同步 AI 分割掩膜图集视频时钟到主 MP4 时钟
@@ -669,6 +672,28 @@ export class VideoBillboardManager {
       this._lastDetectMs = nowMs;
       this._detectAndCluster(nowMs, logicalCameras, bboxProjectors, streamMgr);
     }
+    return this._tracks;
+  }
+
+  /**
+   * 指定相机在离线 AI 分割掩膜图集中的纹理与瓦片区域；无图集或尚未就绪时返回 null
+   */
+  getMaskTile(camId) {
+    const tile = this._maskCamTiles.get(camId);
+    if (!tile || !this._maskTexture || !this._maskVideo || this._maskVideo.readyState < 2) return null;
+    return { texture: this._maskTexture, tile };
+  }
+
+  getExposureGain(camId) {
+    return this._exposureGains.get(camId) ?? 1.0;
+  }
+
+  /**
+   * 主渲染循环调用：若加载了外部高精度 3D 轨迹则按 60Hz 同步插值，否则以 ~30Hz 视觉检测前景
+   */
+  update(nowMs, logicalCameras, bboxProjectors, streamMgr, mainCamera) {
+    if (!this.visible || !this._detCtx) return;
+    this.updateTracks(nowMs, logicalCameras, bboxProjectors, streamMgr);
 
     // 每帧更新立牌朝向，保持底部着地并平滑面向主相机
     let poolIdx = 0;
@@ -770,6 +795,7 @@ export class VideoBillboardManager {
       const fullW = item.intrinsics.width;
       const fullH = item.intrinsics.height;
       const exposureGain = estimateExposureGain(vidRgba, bgRgba);
+      this._exposureGains.set(item.id, exposureGain);
       const detDiffThresh = Math.max(24, Math.round(this.keyThreshold * 240));
       const bboxes = extractForegroundBlobsFromRgba(vidRgba, bgRgba, DET_W, DET_H, fullW, fullH, detDiffThresh);
 
