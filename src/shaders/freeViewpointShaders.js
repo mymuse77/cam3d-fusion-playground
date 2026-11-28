@@ -4,7 +4,7 @@ import { GLSL_CAMERA_MODEL } from './injectMultiProjection.js';
 /**
  * 生成按槽位静态下标分发的采样函数（GLSL ES 3.0 不允许用循环变量索引采样器数组）
  */
-function glslSlotSampler(fnName, uniformName, retType, swizzle) {
+export function glslSlotSampler(fnName, uniformName, retType, swizzle) {
   const branches = Array.from({ length: MAX_CAMS }, (_, i) => {
     const head = i === 0 ? 'if (idx == 0)' : i === MAX_CAMS - 1 ? 'else' : `else if (idx == ${i})`;
     return `    ${head} return textureLod(${uniformName}[${i}], uv, 0.0).${swizzle};`;
@@ -126,6 +126,34 @@ export const MATTE_REFINE_FRAG = `
   }
 `;
 
+/**
+ * 抠像图集采样（需要 uMatteAtlas / uAtlasGrid / uAtlasPad）
+ */
+export const GLSL_SAMPLE_MATTE = `
+  vec4 sampleMatte(int idx, vec2 uv) {
+    int cols = int(uAtlasGrid.x);
+    int row = idx / cols;
+    vec2 cell = vec2(float(idx - row * cols), float(row));
+    return textureLod(uMatteAtlas, (cell + clamp(uv, uAtlasPad, 1.0 - uAtlasPad)) / uAtlasGrid, 0.0);
+  }
+`;
+
+/**
+ * 静态场景遮挡判定（需要 uProjProjectionMatrix 与 sampleDepthSlot）：
+ * 该点是否被静态场景挡住（线性深度比较，偏移随距离增长，避免透视深度在远处失去分辨力）
+ */
+export const GLSL_STATIC_OCCLUDED = `
+  bool staticOccluded(int i, vec4 viewPos) {
+    mat4 pm = uProjProjectionMatrix[i];
+    vec4 clip = pm * viewPos;
+    vec3 ndc = clip.xyz / clip.w;
+    vec2 duv = ndc.xy * 0.5 + 0.5;
+    if (duv.x < 0.0 || duv.x > 1.0 || duv.y < 0.0 || duv.y > 1.0) return false;
+    float sceneDist = pm[3][2] / (sampleDepthSlot(i, duv) * 2.0 - 1.0 + pm[2][2]);
+    return -viewPos.z > sceneDist + 0.12 + 0.01 * sceneDist;
+  }
+`;
+
 export const MAX_TARGETS = 24;
 
 export const CARD_VERT = `
@@ -142,7 +170,7 @@ export const CARD_VERT = `
 /**
  * 自由视点前景片元着色器：
  * 面片上每个三维点按真实标定参数回投到各路相机，取实时视频颜色与抠像 Alpha，
- * 再按"相机方向与当前观察方向的夹角"加权（视点相关纹理），观察者绕到哪一侧就显示哪一侧相机拍到的真实画面。
+ * 再按 CPU 为该目标选定的主相机（及切换时淡出的前一路相机）权重着色，其余相机只在主相机弃权处补全。
  * 借助全部目标的三维位置做像素归属判定：某路相机的视线若先穿过别的目标，该像素拍到的其实是别人，
  * 此时该相机对这一点弃权，由其他相机补全，从而消除目标之间相互串入的重影。
  */
@@ -163,7 +191,8 @@ export const CARD_FRAG = `
   uniform vec4 uIntrinsics[MAX_CAMS];
   uniform vec4 uDistortion[MAX_CAMS];
   uniform vec4 uColorAdjust[MAX_CAMS];
-  uniform float uViewSharpness;
+  uniform vec3 uColorGain[MAX_CAMS];
+  uniform float uCamWeight[MAX_CAMS];  // 每路相机在本面片上的着色权重（由 CPU 按目标选定主相机并随时间淡入淡出）
   uniform float uSupportRadius;  // 一致性表决的空间容差（米）
   uniform vec4 uTargets[MAX_TARGETS];        // 全部目标 (x, 脚底 y, z, 躯干半径)
   uniform float uTargetHeights[MAX_TARGETS]; // 目标高度；<= 0 表示该目标定位不够可靠，不参与像素归属判定
@@ -180,23 +209,8 @@ export const CARD_FRAG = `
 ${glslSlotSampler('sampleLiveSlot', 'uLiveTex', 'vec3', 'rgb')}
 ${glslSlotSampler('sampleDepthSlot', 'uDepthMap', 'float', 'r')}
 
-  vec4 sampleMatte(int idx, vec2 uv) {
-    int cols = int(uAtlasGrid.x);
-    int row = idx / cols;
-    vec2 cell = vec2(float(idx - row * cols), float(row));
-    return textureLod(uMatteAtlas, (cell + clamp(uv, uAtlasPad, 1.0 - uAtlasPad)) / uAtlasGrid, 0.0);
-  }
-
-  // 该点是否被静态场景挡住（线性深度比较，偏移随距离增长，避免透视深度在远处失去分辨力）
-  bool staticOccluded(int i, vec4 viewPos) {
-    mat4 pm = uProjProjectionMatrix[i];
-    vec4 clip = pm * viewPos;
-    vec3 ndc = clip.xyz / clip.w;
-    vec2 duv = ndc.xy * 0.5 + 0.5;
-    if (duv.x < 0.0 || duv.x > 1.0 || duv.y < 0.0 || duv.y > 1.0) return false;
-    float sceneDist = pm[3][2] / (sampleDepthSlot(i, duv) * 2.0 - 1.0 + pm[2][2]);
-    return -viewPos.z > sceneDist + 0.12 + 0.01 * sceneDist;
-  }
+${GLSL_SAMPLE_MATTE}
+${GLSL_STATIC_OCCLUDED}
 
   // 该相机在此处拍到的是否其实是别的目标（视线穿过了另一目标的躯干柱体）：
   // 返回 2 = 该目标的躯干挡在前面，或此点已超出本目标躯干范围，像素归对方；
@@ -246,7 +260,6 @@ ${glslSlotSampler('sampleDepthSlot', 'uDepthMap', 'float', 'r')}
 
   void main() {
     vec3 p = vWorldPos;
-    vec3 toView = normalize(cameraPosition - p);
     float heightAboveFoot = vUv.y * uCardHeight;
 
     // 面片大部分区域是空的：先用每路一次抠像采样快速判断，任何相机都没看到前景就直接丢弃
@@ -290,8 +303,7 @@ ${glslSlotSampler('sampleDepthSlot', 'uDepthMap', 'float', 'r')}
       if (claim == 2) continue;
 
       vec3 toCam = normalize(uProjCamPos[i] - p);
-      // 指数下限防止偏离观察方向较远的相机权重下溢为 0（它们在主相机弃权时仍需接手补全）
-      float align = exp(max(uViewSharpness * (dot(toCam, toView) - 1.0), -60.0));
+      float camW = uCamWeight[i];
 
       // 地面上的影子被该相机"画"到竖直面片上的高度随俯角增大而升高，据此确定暗影剔除区
       // （水平面片本身就贴近地面，不做此处理）
@@ -300,26 +312,26 @@ ${glslSlotSampler('sampleDepthSlot', 'uDepthMap', 'float', 'r')}
 
       if (nearbySupport(i, uv, -viewPos.z, low) < 0.5) {
         vetoes++;
-        vetoWeight += align;
+        vetoWeight += camW;
         continue;
       }
       // 归属存疑的相机仍参与着色，但不计入赞成票：只要有别的相机看见这里是空的就会被否决
       if (claim == 0) {
         approvals++;
-        approveWeight += align;
+        approveWeight += camW;
       }
 
       // 视线几乎贴着面片掠过（含近乎垂直俯拍竖直面片）的相机会把画面拉成长条，不参与着色
       float facing = uFlat > 0.5 ? abs(toCam.y) : abs(dot(toCam.xz, uCardNormal));
       float frontal = smoothstep(0.3, 0.55, facing);
       if (frontal <= 0.0) continue;
-      float w = frontal * align;
+      float w = frontal * camW;
 
       vec4 matte = sampleMatte(i, uv);
       float alpha = matte.r * (1.0 - matte.b * low) * (1.0 - matte.a * low * (1.0 - inBody));
 
       vec3 color = pow(max(sampleLiveSlot(i, uv), vec3(0.0)), vec3(2.2));
-      color = applyColorAdjust(color, uColorAdjust[i]);
+      color = applyColorAdjust(color, uColorAdjust[i]) * uColorGain[i];
 
       accColor += color * (w * alpha);
       accAlpha += w * alpha;

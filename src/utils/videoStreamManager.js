@@ -79,6 +79,10 @@ export class VideoStreamManager {
     };
   }
 
+  getBackgroundTexture(camId) {
+    return this.entries.get(camId)?.bgTexture || null;
+  }
+
   _setBackgroundSource(entry, sourceEl) {
     if (entry.bgTexture) entry.bgTexture.dispose();
     const tex = sourceEl instanceof HTMLCanvasElement ? new THREE.CanvasTexture(sourceEl) : new THREE.Texture(sourceEl);

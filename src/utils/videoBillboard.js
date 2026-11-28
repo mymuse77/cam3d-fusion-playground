@@ -261,13 +261,8 @@ export class VideoBillboardManager {
 
     this._unitPlaneGeo = new THREE.PlaneGeometry(1, 1);
     this._unitPlaneGeo.translate(0, 0.5, 0); // 底部中心为原点（脚底落地）
-    this._ringGeo = new THREE.RingGeometry(0.30, 0.40, 28);
-    this._ringGeo.rotateX(-Math.PI / 2);
 
     this._pool = [];
-    this._ringPool = [];
-    this._labelPool = [];
-    this._labelTexCache = new Map();
     this._tracks = [];
     this._externalTracks = null;
     this._extCamChoice = new Map(); // objId -> { camId, lastSwitchMs }
@@ -300,8 +295,6 @@ export class VideoBillboardManager {
     this.group.visible = visible;
     if (!visible) {
       this._pool.forEach((m) => (m.visible = false));
-      this._ringPool.forEach((r) => (r.visible = false));
-      this._labelPool.forEach((l) => (l.visible = false));
     }
   }
 
@@ -369,8 +362,6 @@ export class VideoBillboardManager {
     this._bgCache.clear();
     this._exposureGains.clear();
     this._pool.forEach((m) => (m.visible = false));
-    this._ringPool.forEach((r) => (r.visible = false));
-    this._labelPool.forEach((l) => (l.visible = false));
   }
 
   _getBgRgba(camId, bgSourceEl) {
@@ -420,79 +411,6 @@ export class VideoBillboardManager {
       this._pool.push(mesh);
     }
     return this._pool[index];
-  }
-
-  _acquireRing(index) {
-    while (this._ringPool.length <= index) {
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0x38bdf8,
-        transparent: true,
-        opacity: 0.85,
-        side: THREE.DoubleSide,
-        depthWrite: false
-      });
-      const ring = new THREE.Mesh(this._ringGeo, mat);
-      ring.frustumCulled = false;
-      ring.visible = false;
-      this.group.add(ring);
-      this._ringPool.push(ring);
-    }
-    return this._ringPool[index];
-  }
-
-  _getLabelTexture(cls, id) {
-    const key = `${cls}_${id}`;
-    const cached = this._labelTexCache.get(key);
-    if (cached) return cached;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = 220;
-    canvas.height = 56;
-    const ctx = canvas.getContext('2d');
-
-    const style =
-      cls === 'robot'
-        ? { bg: 'rgba(234, 88, 12, 0.90)', border: '#fdba74', text: `机器人 #${id}` }
-        : cls === 'agv'
-          ? { bg: 'rgba(101, 163, 13, 0.90)', border: '#d9f99d', text: `AGV #${id}` }
-          : { bg: 'rgba(2, 132, 199, 0.90)', border: '#7dd3fc', text: `工人 #${id}` };
-
-    ctx.fillStyle = style.bg;
-    ctx.strokeStyle = style.border;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.roundRect(6, 6, 208, 44, 12);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 26px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(style.text, 110, 29);
-
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.minFilter = THREE.LinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    this._labelTexCache.set(key, tex);
-    return tex;
-  }
-
-  _acquireLabel(index) {
-    while (this._labelPool.length <= index) {
-      const mat = new THREE.SpriteMaterial({
-        transparent: true,
-        depthTest: false,
-        depthWrite: false
-      });
-      const sprite = new THREE.Sprite(mat);
-      sprite.frustumCulled = false;
-      sprite.visible = false;
-      this.group.add(sprite);
-      this._labelPool.push(sprite);
-    }
-    return this._labelPool[index];
   }
 
   /**
@@ -688,6 +606,14 @@ export class VideoBillboardManager {
     return this._exposureGains.get(camId) ?? 1.0;
   }
 
+  get tracks() {
+    return this._tracks;
+  }
+
+  get hasExternalTracks() {
+    return !!this._externalTracks;
+  }
+
   /**
    * 主渲染循环调用：若加载了外部高精度 3D 轨迹则按 60Hz 同步插值，否则以 ~30Hz 视觉检测前景
    */
@@ -697,7 +623,6 @@ export class VideoBillboardManager {
 
     // 每帧更新立牌朝向，保持底部着地并平滑面向主相机
     let poolIdx = 0;
-    let badgeIdx = 0;
     for (let i = 0; i < this._tracks.length; i++) {
       const tr = this._tracks[i];
       // 连续命中 2 帧以上才显示，彻底消除单帧噪点闪烁
@@ -746,39 +671,18 @@ export class VideoBillboardManager {
         u.uMaskAtlasTex.value = this._emptyMaskTex;
         u.uHasMaskAtlas.value = 0.0;
       }
-
-      // 区分普通工人 / 人形机器人 / AGV：脚底彩色身份光环 + 顶部类型标签
-      if (tr.cls && tr.id !== undefined) {
-        const ring = this._acquireRing(badgeIdx);
-        ring.visible = true;
-        ring.position.set(tr.x, tr.y + 0.03, tr.z);
-        const ringColor = tr.cls === 'robot' ? 0xf97316 : tr.cls === 'agv' ? 0xa3e635 : 0x38bdf8;
-        ring.material.color.setHex(ringColor);
-        const rScale = tr.cls === 'agv' ? 1.55 : 1.0;
-        ring.scale.set(rScale, 1, rScale);
-
-        const label = this._acquireLabel(badgeIdx);
-        label.visible = true;
-        label.material.map = this._getLabelTexture(tr.cls, tr.id);
-        label.material.needsUpdate = true;
-        label.position.set(tr.x, tr.y + tr.height + 0.28, tr.z);
-        label.scale.set(1.15, 0.30, 1);
-        badgeIdx++;
-      }
     }
 
     for (let i = poolIdx; i < this._pool.length; i++) {
       this._pool[i].visible = false;
     }
-    for (let i = badgeIdx; i < this._ringPool.length; i++) {
-      this._ringPool[i].visible = false;
-    }
-    for (let i = badgeIdx; i < this._labelPool.length; i++) {
-      this._labelPool[i].visible = false;
-    }
   }
 
-  _detectAndCluster(nowMs, logicalCameras, bboxProjectors, streamMgr) {
+  /**
+   * 逐路相机的单目前景检测：背景差分斑块 -> 底边落地反投影 -> 三维宽高解算（同时刷新各路曝光增益）
+   * @returns {Array} 观测 [{camId, x, y, z, width, height, distToCam, viewCost, crop, ...}]
+   */
+  detectFootObservations(logicalCameras, bboxProjectors, streamMgr) {
     const observations = [];
 
     for (const item of logicalCameras) {
@@ -849,6 +753,12 @@ export class VideoBillboardManager {
         });
       }
     }
+
+    return observations;
+  }
+
+  _detectAndCluster(nowMs, logicalCameras, bboxProjectors, streamMgr) {
+    const observations = this.detectFootObservations(logicalCameras, bboxProjectors, streamMgr);
 
     // 跨镜水平距离聚类去重（重叠区多路相机合并为 1 个唯一 3D 实体，优先选用低俯角清晰侧拍视角）
     const clusters = [];

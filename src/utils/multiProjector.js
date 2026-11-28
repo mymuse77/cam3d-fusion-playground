@@ -52,6 +52,7 @@ export class MultiProjectorManager {
       uIntrinsics: { value: Array.from({ length: MAX_CAMS }, () => new THREE.Vector4(1, 1, 0.5, 0.5)) },
       uDistortion: { value: Array.from({ length: MAX_CAMS }, () => new THREE.Vector4(0, 0, 0, 0)) },
       uColorAdjust: { value: Array.from({ length: MAX_CAMS }, () => new THREE.Vector4(0, 1, 1, 0)) },
+      uColorGain: { value: Array.from({ length: MAX_CAMS }, () => new THREE.Vector3(1, 1, 1)) },
       uOpacity: { value: 0.9 },
       uFeather: { value: 0.05 },
       uDepthBias: { value: 0.0025 },
@@ -63,9 +64,9 @@ export class MultiProjectorManager {
   }
 
   /**
-   * 写入指定槽位的 OpenCV 内参、畸变系数与色彩调节参数
+   * 写入指定槽位的 OpenCV 内参、畸变系数、色彩调节参数与跨相机自动色彩增益
    */
-  setCalibration(slotIdx, intr, dist = {}, colorAdj = {}) {
+  setCalibration(slotIdx, intr, dist = {}, colorAdj = {}, colorGain = [1, 1, 1]) {
     if (slotIdx < 0 || slotIdx >= MAX_CAMS) return;
     this.sharedUniforms.uIntrinsics.value[slotIdx].set(
       intr.fx / intr.width,
@@ -85,6 +86,7 @@ export class MultiProjectorManager {
       colorAdj.saturation ?? 1.0,
       0.0
     );
+    this.sharedUniforms.uColorGain.value[slotIdx].fromArray(colorGain);
   }
 
   /**

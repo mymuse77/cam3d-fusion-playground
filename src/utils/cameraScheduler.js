@@ -55,6 +55,7 @@ export class CameraScheduler {
     const item = {
       ...entry,
       colorAdjust: entry.colorAdjust || { brightness: 0.0, contrast: 1.0, saturation: 1.0 },
+      colorGain: [1, 1, 1],
       helper,
       boundingSphere: bounds.sphere,
       effectiveCenter: bounds.effectiveCenter
@@ -176,7 +177,7 @@ export class CameraScheduler {
       uniforms.uProjViewMatrix.value[slotIdx].copy(item.camera.matrixWorldInverse);
       uniforms.uProjProjectionMatrix.value[slotIdx].copy(item.camera.projectionMatrix);
       item.camera.getWorldPosition(uniforms.uProjCamPos.value[slotIdx]);
-      this.projectorMgr.setCalibration(slotIdx, item.intrinsics, item.distortion, item.colorAdjust);
+      this.projectorMgr.setCalibration(slotIdx, item.intrinsics, item.distortion, item.colorAdjust, item.colorGain);
     });
 
     return true;

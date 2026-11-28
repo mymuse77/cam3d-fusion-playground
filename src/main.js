@@ -18,6 +18,10 @@ import { VideoStreamManager } from './utils/videoStreamManager.js';
 import { VideoBillboardManager } from './utils/videoBillboard.js';
 import { Avatar3DManager } from './utils/avatar3dManager.js';
 import { FreeViewpointFusion } from './utils/freeViewpointFusion.js';
+import { TargetBadges } from './utils/targetBadges.js';
+import { GroundGrid } from './utils/groundGrid.js';
+import { OccupancyLocator } from './utils/occupancyLocator.js';
+import { AutoColorMatcher } from './utils/autoColorMatcher.js';
 import { mountWebCalibratorModal } from './utils/webCalibrator.js';
 import { createTestCanvasTexture, generateMockYoloDetections } from './utils/mockData.js';
 
@@ -62,6 +66,8 @@ scene.add(geofence.group);
 const targetVisualMgr = new TargetVisualManager(yoloVisualGroup, 45);
 const billboardMgr = new VideoBillboardManager();
 scene.add(billboardMgr.group);
+const badges = new TargetBadges();
+scene.add(badges.group);
 const avatarMgr = new Avatar3DManager();
 scene.add(avatarMgr.group);
 const alarmBanner = document.getElementById('alarm-banner');
@@ -76,6 +82,9 @@ const projectorMgr = new MultiProjectorManager(scene);
 const scheduler = new CameraScheduler(projectorMgr, mainCamera, helperGroup, () => controls.target);
 const freeViewMgr = new FreeViewpointFusion(projectorMgr.sharedUniforms);
 scene.add(freeViewMgr.group);
+const groundGrid = new GroundGrid();
+const occupancyLocator = new OccupancyLocator(groundGrid, freeViewMgr.matteUniforms);
+const colorMatcher = new AutoColorMatcher(groundGrid, projectorMgr.sharedUniforms, projectorMgr);
 
 function updateStatusBar(extraMsg = '') {
   const base = `激活槽位: ${scheduler.slotMap.length} / ${MAX_CAMS} (池总数: ${scheduler.logicalCameras.length})`;
@@ -115,6 +124,7 @@ let activeParkModel = createPracticeScene();
 injectSceneMaterials(activeParkModel);
 scene.add(activeParkModel);
 let walkableMeshes = collectWalkableMeshes(activeParkModel);
+groundGrid.setWalkableMeshes(walkableMeshes);
 
 // ==========================================
 // 3. 初始化 3D 采点工具（练习 4）
@@ -135,7 +145,7 @@ document.getElementById('btn-copy-pts').onclick = async () => {
 document.getElementById('btn-undo-pt').onclick = () => pointPicker.undo();
 document.getElementById('btn-clear-pts').onclick = () => pointPicker.clear();
 
-const hiddenInDepthPass = [helperGroup, pointPicker.markerGroup, yoloVisualGroup, geofence.group, billboardMgr.group];
+const hiddenInDepthPass = [helperGroup, pointPicker.markerGroup, yoloVisualGroup, geofence.group, billboardMgr.group, badges.group];
 
 // ==========================================
 // 4. 配置加载与热重载机制
@@ -165,8 +175,11 @@ async function applyCamerasConfig(config) {
   bboxProjectors.clear();
   streamMgr.disposeAll();
   billboardMgr.clear();
+  badges.clear();
   avatarMgr.clear();
   freeViewMgr.clear();
+  occupancyLocator.clear();
+  colorMatcher.clear();
   ptzItem = null;
 
   if (config.scene?.glbUrl) {
@@ -254,6 +267,7 @@ async function applyCamerasConfig(config) {
     bboxProjectors.set(cfg.id, new BBoxProjector(cam, intr, dist, walkableMeshes));
   });
 
+  groundGrid.setCoverageCameras(scheduler.logicalCameras.map((item) => item.camera));
   scheduler.update(performance.now(), true);
   streamMgr.syncActiveCameras(scheduler.activeIds, performance.now());
   projectorMgr.renderAllDepthMaps(renderer, hiddenInDepthPass);
@@ -338,6 +352,7 @@ function loadSceneModelFromUrl(url, autoCenter = false) {
         scene.add(activeParkModel);
         pointPicker.targetRoot = activeParkModel;
         walkableMeshes = collectWalkableMeshes(activeParkModel);
+        groundGrid.setWalkableMeshes(walkableMeshes);
         bboxProjectors.forEach((proj) => proj.setWalkableMeshes(walkableMeshes));
         projectorMgr.renderAllDepthMaps(renderer, hiddenInDepthPass);
         resolve(activeParkModel);
@@ -356,6 +371,7 @@ function restoreDefaultPracticeScene() {
   scene.add(activeParkModel);
   pointPicker.targetRoot = activeParkModel;
   walkableMeshes = collectWalkableMeshes(activeParkModel);
+  groundGrid.setWalkableMeshes(walkableMeshes);
   bboxProjectors.forEach((proj) => proj.setWalkableMeshes(walkableMeshes));
   projectorMgr.renderAllDepthMaps(renderer, hiddenInDepthPass);
 }
@@ -471,7 +487,8 @@ const state = {
   stressTest30Cams: false,
   enableMockYolo: false,
   enableGeofenceAlarm: true,
-  showGeofence: false
+  showGeofence: false,
+  autoColorMatch: true
 };
 
 const gui = new GUI({ title: '数字孪生 v3.0 实操控制台' });
@@ -500,6 +517,7 @@ function applyForegroundMode(mode) {
   billboardMgr.setVisible(mode === 'billboard');
   avatarMgr.setVisible(mode === 'avatar3d');
   freeViewMgr.setVisible(mode === 'freeview');
+  if (mode !== 'billboard' && mode !== 'freeview') badges.clear();
   if (foregroundModeSelect && foregroundModeSelect.value !== mode) {
     foregroundModeSelect.value = mode;
   }
@@ -517,6 +535,7 @@ f1.add(state, 'grazingThreshold', 0.0, 0.5, 0.02).name('掠射角淡出阈值').
 f1.add(state, 'opacity', 0, 1, 0.05).name('融合透明度').onChange((v) => (projectorMgr.sharedUniforms.uOpacity.value = v));
 f1.add(state, 'feather', 0, 0.2, 0.005).name('边缘羽化').onChange((v) => (projectorMgr.sharedUniforms.uFeather.value = v));
 f1.add(state, 'showHelpers').name('显示视锥体线框').onChange((v) => (helperGroup.visible = v));
+f1.add(state, 'autoColorMatch').name('自动色彩匹配（跨相机）').onChange((v) => colorMatcher.setEnabled(v));
 
 const tuneState = {
   selectedId: 'cam_fixed_01',
@@ -606,7 +625,7 @@ function applyGuiToSelectedCam() {
 
   const slot = scheduler.getSlotIndexById(item.id);
   if (slot >= 0) {
-    projectorMgr.setCalibration(slot, item.intrinsics, item.distortion, item.colorAdjust);
+    projectorMgr.setCalibration(slot, item.intrinsics, item.distortion, item.colorAdjust, item.colorGain);
     projectorMgr.renderSingleDepthMap(renderer, slot, hiddenInDepthPass);
   }
 }
@@ -745,6 +764,7 @@ function animate(now) {
   streamMgr.update(elapsed, now);
   if (state.foregroundMode === 'billboard') {
     billboardMgr.update(now, scheduler.logicalCameras, bboxProjectors, streamMgr, mainCamera);
+    badges.update(billboardMgr.tracks, { rings: true });
   } else if (state.foregroundMode === 'avatar3d') {
     if (!avatarMgr._externalTracks) {
       // 无外部真值轨迹时（如 Blender/EPFL 实景），静默运行视觉检测器为 3D 替身提供实时落脚点
@@ -761,10 +781,22 @@ function animate(now) {
     projectorMgr.renderAllDepthMaps(renderer, hiddenInDepthPass);
     updateStatusBar();
   }
+  colorMatcher.update(renderer, scheduler.slotMap, streamMgr);
   if (state.foregroundMode === 'freeview') {
     // 自由视点融合依赖槽位与相机一一对应，须在调度器刷新槽位之后执行
-    const tracks = billboardMgr.updateTracks(now, scheduler.logicalCameras, bboxProjectors, streamMgr);
-    freeViewMgr.update(renderer, tracks, scheduler.slotMap, streamMgr, billboardMgr, mainCamera);
+    let tracks;
+    if (billboardMgr.hasExternalTracks) {
+      // updateTracks 同时负责把 AI 掩膜视频时钟对齐到主 MP4，须先于 prepare 使用掩膜
+      tracks = billboardMgr.updateTracks(now, scheduler.logicalCameras, bboxProjectors, streamMgr);
+      freeViewMgr.prepare(renderer, scheduler.slotMap, streamMgr, billboardMgr);
+    } else {
+      freeViewMgr.prepare(renderer, scheduler.slotMap, streamMgr, billboardMgr);
+      tracks = occupancyLocator.update(renderer, now, () =>
+        billboardMgr.detectFootObservations(scheduler.logicalCameras, bboxProjectors, streamMgr)
+      );
+    }
+    const placed = freeViewMgr.update(tracks, scheduler.slotMap, mainCamera, now);
+    badges.update(placed, { rings: false });
   }
   if (frameCount % 30 === 0) {
     streamMgr.syncActiveCameras(scheduler.activeIds, now);
@@ -787,7 +819,7 @@ function animate(now) {
       bboxProjectors.get(ptzItem.id)?.setCalibration(ptzUpdate.intrinsics, ptzUpdate.distortion);
       const slot = scheduler.getSlotIndexById(ptzItem.id);
       if (slot >= 0) {
-        projectorMgr.setCalibration(slot, ptzUpdate.intrinsics, ptzUpdate.distortion, ptzItem.colorAdjust);
+        projectorMgr.setCalibration(slot, ptzUpdate.intrinsics, ptzUpdate.distortion, ptzItem.colorAdjust, ptzItem.colorGain);
         if (frameCount % 2 === 0) {
           projectorMgr.renderSingleDepthMap(renderer, slot, hiddenInDepthPass);
         }

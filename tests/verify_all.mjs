@@ -10,7 +10,9 @@ import { PTZController } from '../src/utils/ptzController.js';
 import { Geofence3D, TargetVisualManager } from '../src/utils/geofenceAndVisuals.js';
 import { VideoStreamManager } from '../src/utils/videoStreamManager.js';
 import { extractForegroundBlobsFromRgba } from '../src/utils/videoBillboard.js';
-import { resolveCardPose } from '../src/utils/freeViewpointFusion.js';
+import { resolveCardPose, selectPrimaryCamera } from '../src/utils/freeViewpointFusion.js';
+import { extractOccupancyPeaks } from '../src/utils/occupancyLocator.js';
+import { solveColorGains } from '../src/utils/autoColorMatcher.js';
 import { solveCameraPnP } from '../src/utils/webCalibrator.js';
 
 // Polyfill 最小 DOM 环境供 Three.js CanvasTexture / VideoStreamManager 在 Node 下运行
@@ -340,30 +342,125 @@ if (typeof globalThis.document === 'undefined') {
   assert.equal(resolveCardPose(person, [], camA), null, '没有任何相机看到目标时不应生成面片');
 
   // 观察者与相机 A 同向：面片正对相机 A，此时画面与该路原始视频逐像素一致
-  const atCamA = resolveCardPose(person, [camA, camB], { x: 8, y: 5, z: 0 });
+  const atCamA = resolveCardPose(person, [{ pos: camA, weight: 1 }, { pos: camB, weight: 0 }], { x: 8, y: 5, z: 0 });
   assert.ok(Math.abs(angleOf(atCamA.normal)) < 1, `面片应正对相机 A，实际法向角 ${angleOf(atCamA.normal)}°`);
 
   // 观察者偏离唯一相机 60°：法向应取两者角平分线 (30°)，保证目标宽度不失真
-  const off60 = resolveCardPose(person, [camA], { x: 5, y: 3, z: 5 * Math.sqrt(3) });
+  const off60 = resolveCardPose(person, [{ pos: camA, weight: 1 }], { x: 5, y: 3, z: 5 * Math.sqrt(3) });
   assert.ok(Math.abs(angleOf(off60.normal) - 30) < 1, `法向应为 30° 角平分线，实际 ${angleOf(off60.normal)}°`);
 
   // 观察者绕到唯一相机的正对面：面片正反面等价，应正对观察者而非侧立成一条线
-  const behind = resolveCardPose(person, [camA], { x: -8, y: 3, z: 0 });
+  const behind = resolveCardPose(person, [{ pos: camA, weight: 1 }], { x: -8, y: 3, z: 0 });
   assert.ok(Math.abs(Math.abs(angleOf(behind.normal)) - 180) < 1, `面片应正对背面观察者，实际 ${angleOf(behind.normal)}°`);
 
-  // 观察者更靠近相机 B：主纹理相机切换为 B，法向落在 B 与观察者之间
-  const nearB = resolveCardPose(person, [camA, camB], { x: 2, y: 5, z: 8 });
+  // 主纹理相机权重全部给相机 B：法向落在 B 与观察者之间
+  const nearB = resolveCardPose(person, [{ pos: camA, weight: 0 }, { pos: camB, weight: 1 }], { x: 2, y: 5, z: 8 });
   assert.ok(angleOf(nearB.normal) > 75 && angleOf(nearB.normal) < 90, `法向应靠近相机 B，实际 ${angleOf(nearB.normal)}°`);
 
+  // 两路相机各占 0.5 权重：法向落在两路各自角平分线之间
+  const viewerMid = { x: 5, y: 3, z: 5 };
+  const nA = angleOf(resolveCardPose(person, [{ pos: camA, weight: 1 }], viewerMid).normal);
+  const nB = angleOf(resolveCardPose(person, [{ pos: camB, weight: 1 }], viewerMid).normal);
+  const nMix = angleOf(resolveCardPose(person, [{ pos: camA, weight: 0.5 }, { pos: camB, weight: 0.5 }], viewerMid).normal);
+  assert.ok(nMix > Math.min(nA, nB) - 1e-6 && nMix < Math.max(nA, nB) + 1e-6, `混合法向 ${nMix}° 应介于 ${nA}° 与 ${nB}° 之间`);
+
   // 直立目标：检测框宽度按身高比例封顶；提供真实占地宽度时直接采用
-  const wide = resolveCardPose({ ...person, width: 2.4 }, [camA], camA);
+  const wide = resolveCardPose({ ...person, width: 2.4 }, [{ pos: camA, weight: 1 }], camA);
   assert.ok(wide.bodyRadius < 0.45 && !wide.flat, `直立目标躯干半径应受身高约束，实际 ${wide.bodyRadius}`);
-  const exact = resolveCardPose({ ...person, width: 2.4, footprint: 0.52 }, [camA], camA);
+  const exact = resolveCardPose({ ...person, width: 2.4, footprint: 0.52 }, [{ pos: camA, weight: 1 }], camA);
   assert.ok(Math.abs(exact.bodyRadius - 0.31) < 1e-6, `应采用真实占地宽度，实际 ${exact.bodyRadius}`);
 
   // 低矮目标（AGV）改用盖在顶面高度的水平面片
-  const agv = resolveCardPose({ x: 0, y: 0, z: 0, width: 0.4, height: 0.2, footprint: 1.43 }, [camA], camB);
+  const agv = resolveCardPose({ x: 0, y: 0, z: 0, width: 0.4, height: 0.2, footprint: 1.43 }, [{ pos: camA, weight: 1 }], camB);
   assert.ok(agv.flat && Math.abs(agv.height - 0.2) < 1e-9 && agv.bodyRadius > 0.7, 'AGV 应使用水平面片并覆盖完整占地');
 
   console.log(`[PASS] 8. 自由视点融合面片解算（角平分线朝向 ${angleOf(off60.normal).toFixed(1)}° + 水平面片 + 尺寸先验）`);
+}
+
+// ==========================================
+// 9. 自由视点融合：按目标选择主相机（分数边际 + 保持时长滞回）
+// ==========================================
+{
+  const cands = (a, b) => [{ camId: 'A', score: a }, { camId: 'B', score: b }];
+
+  const init = selectPrimaryCamera(cands(0.2, 0.6), undefined, 1000);
+  assert.deepEqual(init, { camId: 'B', prevCamId: null, switchMs: 1000 }, '首次应直接选最高分且不淡入');
+
+  const state = { camId: 'A', prevCamId: null, switchMs: 1000 };
+  assert.equal(selectPrimaryCamera(cands(0.5, 0.57), state, 5000), state, '分数差未超过边际不应切换');
+  assert.equal(selectPrimaryCamera(cands(-1, 0.9), state, 1300), state, '保持时长未满即使分数差很大也不应切换');
+
+  const switched = selectPrimaryCamera(cands(0.2, 0.5), state, 1400);
+  assert.deepEqual(switched, { camId: 'B', prevCamId: 'A', switchMs: 1400 }, '保持时长已满且领先边际应切换并记录前一路相机');
+
+  const lost = selectPrimaryCamera([{ camId: 'B', score: 0.1 }], state, 1050);
+  assert.deepEqual(lost, { camId: 'B', prevCamId: null, switchMs: 1050 }, '当前相机消失应立即切换且不淡入');
+
+  console.log('[PASS] 9. 自由视点主相机选择（边际 + 保持时长滞回 + 相机丢失立即切换）');
+}
+
+// ==========================================
+// 10. 占据度峰值提取：平滑 + 局部极大 + NMS + 加权质心细化
+// ==========================================
+{
+  const cols = 64;
+  const rows = 64;
+  const cellSize = 0.1;
+  const data = new Uint8Array(cols * rows * 4);
+  const sigma = 1.5; // 单元
+  const addBlob = (cx, cy, peak, nCams, heightCount) => {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const v = peak * Math.exp(-((c - cx) ** 2 + (r - cy) ** 2) / (2 * sigma * sigma));
+        const i = (r * cols + c) * 4;
+        data[i] = Math.max(data[i], Math.round(v * 255));
+        if (v > 0.1) {
+          data[i + 1] = Math.round((nCams / 6) * 255);
+          data[i + 2] = Math.round((heightCount / 8) * 255);
+        }
+      }
+    }
+  };
+  const A = { c: 20, r: 30 };
+  const B = { c: 27.4, r: 30.3 }; // 与 A 相距 0.74 m，落在小数单元位置
+  addBlob(A.c, A.r, 1.0, 3, 7);
+  addBlob(B.c, B.r, 1.0, 2, 6);
+  addBlob(50, 12, 0.35, 1, 2);
+
+  const peaks = extractOccupancyPeaks(data, cols, rows, { cellSize });
+  assert.equal(peaks.length, 2, `应恰好检出 2 个峰，实际 ${peaks.length}`);
+  const near = (p, t) => Math.hypot(p.col - t.c, p.row - t.r) * cellSize;
+  const pa = peaks.find((p) => near(p, A) < 0.3);
+  const pb = peaks.find((p) => near(p, B) < 0.3);
+  assert.ok(pa && pb, '两个峰应分别落在两个目标附近');
+  assert.ok(near(pa, A) < 0.05, `A 质心误差 ${near(pa, A).toFixed(3)} m`);
+  assert.ok(near(pb, B) < 0.05, `B 质心误差 ${near(pb, B).toFixed(3)} m`);
+  assert.equal(pa.nCams, 3);
+  assert.equal(pa.heightCount, 7);
+  assert.equal(pb.nCams, 2);
+  assert.equal(pb.heightCount, 6);
+  assert.ok(pa.area > 0.1 && pa.area < 1.5, `面积应为合理的人体占地，实际 ${pa.area}`);
+
+  console.log(`[PASS] 10. 占据度峰值提取（2 峰，质心误差 ${near(pa, A).toFixed(3)} / ${near(pb, B).toFixed(3)} m，弱峰被忽略）`);
+}
+
+// ==========================================
+// 11. 自动色彩匹配：由两两对数颜色比解出各路相机增益（仅 a-b、b-c 配对，孤立相机增益为 1）
+// ==========================================
+{
+  // 相机观测亮度倍率（逐通道）：a 为基准，b 偏亮 25%，c 偏暗 20%
+  const mult = { a: [1.0, 1.0, 1.0], b: [1.25, 1.1, 1.25], c: [0.8, 0.9, 0.8] };
+  const pairOf = (x, y, weight) => ({ a: x, b: y, logRatio: mult[x].map((m, ch) => Math.log(m / mult[y][ch])), weight });
+  const gains = solveColorGains(['a', 'b', 'c', 'iso'], [pairOf('a', 'b', 120), pairOf('b', 'c', 80)]);
+
+  for (let ch = 0; ch < 3; ch++) {
+    const corrected = ['a', 'b', 'c'].map((id) => gains.get(id)[ch] * mult[id][ch]);
+    const spread = Math.max(...corrected) / Math.min(...corrected) - 1;
+    assert.ok(spread < 0.02, `通道 ${ch} 校正后三路相机应一致，相对差 ${(spread * 100).toFixed(2)}%`);
+    const geoMean = Math.cbrt(['a', 'b', 'c'].reduce((p, id) => p * gains.get(id)[ch], 1));
+    assert.ok(Math.abs(geoMean - 1) < 0.01, `通道 ${ch} 增益几何均值应为 1，实际 ${geoMean}`);
+  }
+  assert.deepEqual(gains.get('iso'), [1, 1, 1], '没有任何配对的相机增益应为 1');
+
+  console.log(`[PASS] 11. 自动色彩匹配求解（增益 b=${gains.get('b').map((g) => g.toFixed(3))}，孤立相机 [1,1,1]）`);
 }

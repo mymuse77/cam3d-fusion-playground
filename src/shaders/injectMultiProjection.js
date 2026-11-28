@@ -108,6 +108,7 @@ export function injectMultiProjection(material, sharedUniforms) {
          uniform vec4 uIntrinsics[MAX_CAMS];   // (fx/w, fy/h, cx/w, cy/h)
          uniform vec4 uDistortion[MAX_CAMS];   // (k1, k2, p1, p2)
          uniform vec4 uColorAdjust[MAX_CAMS];  // (brightness, contrast, saturation, 0)
+         uniform vec3 uColorGain[MAX_CAMS];    // 跨相机自动色彩匹配的线性 RGB 增益
          uniform float uOpacity;
          uniform float uFeather;
          uniform float uDepthBias;
@@ -206,7 +207,7 @@ export function injectMultiProjection(material, sharedUniforms) {
           if (uIsVideoTex[i] > 0.5) {
             rawVideo = pow(max(rawVideo, vec3(0.0)), vec3(2.2));
           }
-          vec3 videoColor = applyColorAdjust(rawVideo, uColorAdjust[i]);
+          vec3 videoColor = applyColorAdjust(rawVideo, uColorAdjust[i]) * uColorGain[i];
 
           accumVideo += videoColor * weight;
           totalWeight += weight;

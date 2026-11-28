@@ -10,6 +10,7 @@ class KalmanTrack3D {
     this.state = [x, z, 0, 0];
     this.y = y;
     this.lastSeen = nowMs;
+    this.hits = 1;
 
     // 4x4 初始状态协方差（展平为长度 16 的数组）
     this.P = [
@@ -105,6 +106,7 @@ class KalmanTrack3D {
     this.P = mat4Mul(IKH, this.P);
     this.y = this.y + (zy - this.y) * 0.65;
     this.lastSeen = nowMs;
+    this.hits++;
   }
 
   toSnapshot() {
@@ -116,6 +118,7 @@ class KalmanTrack3D {
       z: this.state[1],
       vx: this.state[2],
       vz: this.state[3],
+      hits: this.hits,
       lastSeen: this.lastSeen
     };
   }
